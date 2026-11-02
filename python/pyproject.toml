@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trail-evidence"
+version = "0.1.0.dev0"
+description = "Trail Evidence Record v1: seal and verify hash-chained JSON evidence records (reference implementation, standard library only)"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.9"
+authors = [{ name = "Florian Przybylak" }]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Security :: Cryptography",
+]
+dependencies = []
+
+[project.scripts]
+trail-evidence-py = "trail_evidence.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["trail_evidence*"]

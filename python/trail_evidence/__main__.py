@@ -90,8 +90,11 @@ def cmd_check_vectors(args: argparse.Namespace) -> int:
         }
         bad = [k for k, val in got.items() if v[k] != val]
         _, findings = rec.verify_record(v["record"])
-        classes = {f.cls for f in findings}
-        if v["expected_valid"] and findings:
+        classes = {f.cls for f in findings if f.severity == rec.ERROR}
+        notices = [f.cls for f in findings if f.severity == rec.NOTICE]
+        if notices != v.get("expected_notices", []):
+            bad.append("notices:" + ",".join(notices))
+        if v["expected_valid"] and classes:
             bad.append("findings:" + ",".join(sorted(classes)))
         if not v["expected_valid"] and v.get("expected_error") not in classes:
             bad.append("missing:" + str(v.get("expected_error")))

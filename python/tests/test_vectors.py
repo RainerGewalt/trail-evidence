@@ -41,7 +41,9 @@ class Vectors(unittest.TestCase):
                 self.assertEqual(h["chain_hash"], v["expected_chain_hash"])
                 record, findings = verify_record(json.dumps(v["record"], ensure_ascii=False))
                 self.assertIsNotNone(record)
-                classes = [f.cls for f in findings]
+                classes = [f.cls for f in findings if f.severity == rec.ERROR]
+                notices = [f.cls for f in findings if f.severity == rec.NOTICE]
+                self.assertEqual(notices, v.get("expected_notices", []))
                 if v["expected_valid"]:
                     self.assertEqual(classes, [], findings)
                 else:
@@ -135,6 +137,14 @@ class Sealing(unittest.TestCase):
         r4["anchor_hash"] = r["chain_hash"]
         with self.assertRaises(ValueError):
             seal(r4, GENESIS_HASH)
+
+    def test_number_precision_notice(self):
+        r = self.base()
+        r["payload"] = {"ok": 9007199254740992, "big": 9007199254740993, "neg": -(2**60), "f": 1e21, "s": "9007199254740993"}
+        seal(r, GENESIS_HASH)
+        _, findings = verify_record(json.dumps(r))
+        self.assertEqual([(f.cls, f.severity) for f in findings], [(rec.NUMBER_PRECISION, rec.NOTICE)])
+        self.assertIn("2 integer(s)", findings[0].message)
 
     def test_schema_checks(self):
         r = seal(self.base(), GENESIS_HASH)

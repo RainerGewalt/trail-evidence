@@ -1,7 +1,7 @@
 {
   "schema": "trail.evidence/1",
   "generated_by": "github.com/RainerGewalt/trail-evidence/go (reference implementation)",
-  "note": "Every implementation MUST reproduce expected_payload_jcs, expected_content_hash, expected_core_jcs and expected_chain_hash byte for byte. For vectors with expected_valid=false the expected_* values are the correct ones and the record carries the defect.",
+  "note": "Every implementation MUST reproduce expected_payload_jcs, expected_content_hash, expected_core_jcs and expected_chain_hash byte for byte. For vectors with expected_valid=false the expected_* values are the correct ones and the record carries the defect. expected_notices lists the notice classes a verifier must report for the record on its own.",
   "test_key": {
     "note": "TEST KEY ONLY. This is RFC 8032 section 7.1 test vector 1 and is public knowledge. Never sign real evidence with it.",
     "seed_hex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
@@ -294,7 +294,7 @@
     },
     {
       "name": "jcs-edge-cases",
-      "description": "Payload exercises RFC 8785: ES6 number formatting (1.0 -> 1, 1e21 -> 1e+21, -0.0 -> 0, 9007199254740993 -> 9007199254740992), minimal string escaping with lowercase \\u00xx, literal non-ASCII, and member sorting by UTF-16 code units (U+1F680 before U+FF01).",
+      "description": "Payload exercises RFC 8785: ES6 number formatting (1.0 -> 1, 1e21 -> 1e+21, -0.0 -> 0, 9007199254740993 -> 9007199254740992), minimal string escaping with lowercase \\u00xx, literal non-ASCII, and member sorting by UTF-16 code units (U+1F680 before U+FF01). The integer beyond 2^53 must produce a number_precision notice.",
       "record": {
         "schema": "trail.evidence/1",
         "producer": {
@@ -364,7 +364,10 @@
       "expected_content_hash": "sha256:b7299d99bbdff8f377a1cfe287d1a0326842548f6f7b4e946e62f53ed5af612f",
       "expected_core_jcs": "{\"actor\":{\"auth\":\"none\"},\"content_hash\":\"sha256:b7299d99bbdff8f377a1cfe287d1a0326842548f6f7b4e946e62f53ed5af612f\",\"event_type\":\"test.jcs.edgecases\",\"policy\":{\"hash\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"id\":\"none\",\"version\":\"0\"},\"prev_hash\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"producer\":{\"id\":\"ref-producer\",\"kind\":\"other\",\"version\":\"0.1.0\"},\"schema\":\"trail.evidence/1\",\"seq\":0,\"stream_id\":\"jcs\",\"time\":{\"recorded_at\":\"2026-11-02T12:00:00.000Z\",\"source\":\"system\"}}",
       "expected_chain_hash": "sha256:dd9635d44654ab348e7c30ac4179340826515bf9c8312c1382dcad0ab55bf082",
-      "expected_valid": true
+      "expected_valid": true,
+      "expected_notices": [
+        "number_precision"
+      ]
     },
     {
       "name": "signed",

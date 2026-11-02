@@ -58,7 +58,7 @@ f, mode, gorc, pyrc = sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6]
 def shape(r):
     return {
         "ok": r["ok"], "records": r["records"], "errors": r["errors"], "restarts": r["restarts"],
-        "signed": r["signed_records"], "verified": r["signatures_verified"], "unsigned": r["unsigned_records"],
+        "notices": r["notices"], "signed": r["signed_records"], "verified": r["signatures_verified"], "unsigned": r["unsigned_records"],
         "streams": [(s["stream_id"], s["records"], s["last_seq"], s["last_chain_hash"], s["restarts"]) for s in r["streams"]],
         "findings": [(x["index"], x["class"], x["severity"]) for x in r["findings"]],
     }

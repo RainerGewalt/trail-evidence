@@ -60,6 +60,9 @@ SEQ_GAP = "seq_gap"
 RESTART = "restart"
 SIGNATURE_INVALID = "signature_invalid"
 SCHEMA_INVALID = "schema_invalid"
+NUMBER_PRECISION = "number_precision"  # notice, never an error
+
+MAX_SAFE_INTEGER = 2**53
 
 ERROR = "error"
 NOTICE = "notice"
@@ -110,6 +113,7 @@ class Report:
     signed_records: int = 0
     signatures_verified: int = 0
     unsigned_records: int = 0
+    notices: int = 0
     streams: list = field(default_factory=list)
     findings: list = field(default_factory=list)
 
@@ -119,8 +123,10 @@ class Report:
             if f.severity == ERROR:
                 self.errors += 1
                 self.ok = False
-            elif f.cls == RESTART:
-                self.restarts += 1
+            else:
+                self.notices += 1
+                if f.cls == RESTART:
+                    self.restarts += 1
 
     def summary(self) -> str:
         head = "OK: " if self.ok else "FAIL: "
@@ -143,6 +149,7 @@ class Report:
             "signed_records": self.signed_records,
             "signatures_verified": self.signatures_verified,
             "unsigned_records": self.unsigned_records,
+            "notices": self.notices,
             "streams": [s.to_dict() for s in self.streams],
             "findings": [f.to_dict() for f in self.findings],
         }
@@ -524,7 +531,28 @@ def verify_record(raw: Union[str, bytes, dict]):
     if h["chain_hash"] != record.get("chain_hash"):
         findings.append(Finding(0, 0, HASH_MISMATCH, ERROR,
                                 f"chain_hash mismatch: recorded {record.get('chain_hash')}, computed {h['chain_hash']}"))
+    n = unsafe_integers(record["payload"])
+    if n:
+        findings.append(Finding(0, 0, NUMBER_PRECISION, NOTICE,
+                                f"payload contains {n} integer(s) outside +/-2^53; JCS renders them as IEEE-754 doubles, transport such values as strings"))
     return record, findings
+
+
+def unsafe_integers(value: Any) -> int:
+    """Count integers in a parsed JSON value whose magnitude exceeds 2^53.
+
+    Floats (literals with a fraction or exponent) are not counted; they are
+    doubles by intent.
+    """
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return 1 if abs(value) > MAX_SAFE_INTEGER else 0
+    if isinstance(value, list):
+        return sum(unsafe_integers(v) for v in value)
+    if isinstance(value, dict):
+        return sum(unsafe_integers(v) for v in value.values())
+    return 0
 
 
 def _stream_id(record: dict) -> str:

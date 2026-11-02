@@ -34,6 +34,7 @@ type Vector struct {
 	ExpectedChainHash   string          `json:"expected_chain_hash"`
 	ExpectedValid       bool            `json:"expected_valid"`
 	ExpectedError       string          `json:"expected_error,omitempty"`
+	ExpectedNotices     []string        `json:"expected_notices,omitempty"`
 }
 
 // File is the shape of testdata/vectors.json.
@@ -138,7 +139,16 @@ func finishVector(name, desc, raw string, valid bool, class string) Vector {
 	if err != nil {
 		panic(err)
 	}
+	var notices []string
+	if _, findings := evidence.VerifyRecord([]byte(raw)); findings != nil {
+		for _, f := range findings {
+			if f.Severity == evidence.SeverityNotice {
+				notices = append(notices, f.Class)
+			}
+		}
+	}
 	return Vector{
+		ExpectedNotices:     notices,
 		Name:                name,
 		Description:         desc,
 		Record:              json.RawMessage(raw),
@@ -159,7 +169,7 @@ func Build() Output {
 	out.Vectors = File{
 		Schema:      evidence.Schema,
 		GeneratedBy: "github.com/RainerGewalt/trail-evidence/go (reference implementation)",
-		Note:        "Every implementation MUST reproduce expected_payload_jcs, expected_content_hash, expected_core_jcs and expected_chain_hash byte for byte. For vectors with expected_valid=false the expected_* values are the correct ones and the record carries the defect.",
+		Note:        "Every implementation MUST reproduce expected_payload_jcs, expected_content_hash, expected_core_jcs and expected_chain_hash byte for byte. For vectors with expected_valid=false the expected_* values are the correct ones and the record carries the defect. expected_notices lists the notice classes a verifier must report for the record on its own.",
 		TestKey: TestKey{
 			Note:      "TEST KEY ONLY. This is RFC 8032 section 7.1 test vector 1 and is public knowledge. Never sign real evidence with it.",
 			SeedHex:   TestKeySeedHex,
@@ -229,7 +239,7 @@ func Build() Output {
 		`{"z_last":"z","float_one":1.0,"int_one":1,"exp_big":1e21,"below_exp":123456789012345680000,"small":0.000001,"smaller":1e-7,"neg_zero":-0.0,"upper_exp":1E+2,"beyond_2_53":9007199254740993,"denormal":5e-324,"huge":1.5e300,"tenth":0.1,"neg":-42.25,"empty_obj":{},"empty_arr":[],"empty_str":"","nested":{"y":[1,{"b":2,"a":1}],"x":null},"ctrl":"tab\tnewline\ncr\rbs\bff\fnul\u0000unit\u001fdel\u007fquote\"backslash\\slash/","umlaut":"Füße und Größe","emoji":"🚀 Rakete","mixed":"αβγ 日本語 עברית","！":"fullwidth exclamation U+FF01","🚀":"rocket U+1F680 sorts before U+FF01 in UTF-16","€":"euro U+20AC","ä":"a umlaut U+00E4","Z":"upper Z sorts before lower a","a":"lower a"}`)
 	seal(&v7, evidence.GenesisHash)
 	out.Vectors.Vectors = append(out.Vectors.Vectors, vector("jcs-edge-cases",
-		"Payload exercises RFC 8785: ES6 number formatting (1.0 -> 1, 1e21 -> 1e+21, -0.0 -> 0, 9007199254740993 -> 9007199254740992), minimal string escaping with lowercase \\u00xx, literal non-ASCII, and member sorting by UTF-16 code units (U+1F680 before U+FF01).", &v7))
+		"Payload exercises RFC 8785: ES6 number formatting (1.0 -> 1, 1e21 -> 1e+21, -0.0 -> 0, 9007199254740993 -> 9007199254740992), minimal string escaping with lowercase \\u00xx, literal non-ASCII, and member sorting by UTF-16 code units (U+1F680 before U+FF01). The integer beyond 2^53 must produce a number_precision notice.", &v7))
 
 	// Vector 8: signed.
 	v8 := v2

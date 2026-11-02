@@ -30,6 +30,7 @@ type vectorFile struct {
 		ExpectedChainHash   string          `json:"expected_chain_hash"`
 		ExpectedValid       bool            `json:"expected_valid"`
 		ExpectedError       string          `json:"expected_error"`
+		ExpectedNotices     []string        `json:"expected_notices"`
 	} `json:"vectors"`
 }
 
@@ -74,8 +75,19 @@ func TestVectorsReproduce(t *testing.T) {
 			if rec == nil {
 				t.Fatalf("record did not decode: %v", findings)
 			}
+			var errs, notices []string
+			for _, f := range findings {
+				if f.Severity == evidence.SeverityNotice {
+					notices = append(notices, f.Class)
+				} else {
+					errs = append(errs, f.Class)
+				}
+			}
+			if strings.Join(notices, ",") != strings.Join(v.ExpectedNotices, ",") {
+				t.Errorf("notices got %v want %v", notices, v.ExpectedNotices)
+			}
 			if v.ExpectedValid {
-				if len(findings) != 0 {
+				if len(errs) != 0 {
 					t.Errorf("unexpected findings: %+v", findings)
 				}
 			} else {

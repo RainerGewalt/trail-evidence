@@ -11,7 +11,8 @@ tagged. Until then the record format is a draft and may change.
 - `SPEC.md`: Trail Evidence Record v1 draft with canonicalisation (RFC 8785),
   hashing, chaining, restart, signature and verification rules, and the
   finding classes `hash_mismatch`, `chain_break`, `seq_gap`, `restart`,
-  `signature_invalid`, `schema_invalid`.
+  `signature_invalid`, `schema_invalid`, and the notice `number_precision`
+  for payload integers outside ±2^53.
 - `schema/trail-evidence-1.schema.json`: JSON Schema 2020-12 for the record.
 - Go module `github.com/RainerGewalt/trail-evidence/go` with package
   `evidence` (`Seal`, `Sign`, `VerifyRecord`, `VerifyStream`) and the CLI

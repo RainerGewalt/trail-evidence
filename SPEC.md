@@ -146,10 +146,17 @@ Member order in the serialised record is irrelevant; JCS sorts.
 
 - Secrets MUST be masked before `content_hash` is computed and the masked
   members MUST be listed in `redaction.fields`.
-- Numbers whose exact decimal rendering matters (measurements, probabilities,
-  money) SHOULD be transported as strings inside `payload`. JCS normalises
-  numbers to IEEE-754 doubles and ES6 formatting; `1.0` and `1` hash the
-  same, and integers beyond 2^53 lose precision.
+- JCS forces ES6 number semantics: every JSON number is an IEEE-754 double
+  and is rendered with the ES6 `Number.prototype.toString` rules. Two
+  consequences follow. Integers outside ±2^53 MUST be transported as
+  strings inside `payload`; otherwise they are silently rounded (vector
+  `jcs-edge-cases`: `9007199254740993` canonicalises to
+  `9007199254740992`, and a verifier reports the `number_precision`
+  notice). Floating point numbers whose exact decimal rendering matters
+  (measurements, probabilities, money) SHOULD be transported as strings as
+  well: `1.0` and `1` hash the same, `4.50` becomes `4.5`, and decimal
+  fractions pass through binary rounding. Strings keep the bytes the
+  producer wrote.
 - `payload` MAY be `null`; it MUST be present.
 
 ## 5. Signature
@@ -181,6 +188,7 @@ message. The journal verifies (`ok`) when no finding has severity `error`.
 | `chain_break` | error | `prev_hash` does not match the previous `chain_hash` of the stream; first record of a stream is neither genesis nor a restart; restart `anchor_hash` matches neither the previous segment's last `chain_hash` nor genesis. |
 | `seq_gap` | error | `seq` is not previous + 1; first record of a stream has `seq != 0` without restart. |
 | `restart` | notice | A record with `chain_restart: true`. Reported separately so that breaks and gaps stay distinguishable from intended restarts. |
+| `number_precision` | notice | `payload` contains an integer literal outside ±2^53 (no fraction, no exponent). The hashes are still well defined, but the value was rounded by canonicalisation; see 4.3. |
 | `signature_invalid` | error | Signature present but malformed or not verifying with the given key; or, when signatures are required, a record without one. |
 
 ### 6.2 Algorithm
@@ -197,7 +205,8 @@ For each non-empty line, in file order:
 3. **Hashes.** Recompute `content_hash` over JCS(`payload`). Build the core
    from the record's own members, replacing `content_hash` with the
    recomputed value, and recompute `chain_hash`. Report each difference as
-   `hash_mismatch`.
+   `hash_mismatch`. If `payload` contains integer literals outside ±2^53,
+   report one `number_precision` notice for the record.
 4. **Chain.** Look up the state of `stream_id`:
    - record has `chain_restart`: report `restart` (notice); if the stream was
      seen before and `anchor_hash` is neither its `last_chain_hash` nor
@@ -218,7 +227,7 @@ For each non-empty line, in file order:
    error.
 
 The report SHOULD contain: `ok`, number of records, number of errors,
-number of restarts, number of signed records, number of verified
+number of notices, number of restarts, number of signed records, number of verified
 signatures, a summary per stream (`stream_id`, records, first and last
 `seq`, `last_chain_hash`, restarts), and the findings.
 

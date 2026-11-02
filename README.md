@@ -100,8 +100,17 @@ the file, and a public key if you want signatures checked.
 Hashing: everything is SHA-256 over RFC 8785 (JCS) bytes, written as
 `sha256:` plus 64 lowercase hex characters. Genesis `prev_hash` is 64
 zeros. The full rules, the verification algorithm and the finding classes
-(`hash_mismatch`, `chain_break`, `seq_gap`, `restart`,
-`signature_invalid`, `schema_invalid`) are in [SPEC.md](SPEC.md).
+(`hash_mismatch`, `chain_break`, `seq_gap`, `signature_invalid`,
+`schema_invalid`, plus the notices `restart` and `number_precision`) are
+in [SPEC.md](SPEC.md).
+
+Numbers in `payload`: JCS applies ES6 number semantics, so every number is
+an IEEE-754 double. Integers outside ±2^53 must be sent as strings, and
+floats whose exact decimal form matters should be. The vector
+`jcs-edge-cases` in `testdata/vectors.json` shows what happens otherwise:
+`9007199254740993` canonicalises to `9007199254740992`, and `verify`
+reports a `number_precision` notice for the record. The hashes stay well
+defined; the value you meant is gone.
 
 ## What verification tells you
 

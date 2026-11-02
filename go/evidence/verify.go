@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/ed25519"
+	"encoding/json"
 	"fmt"
 	"io"
+	"math/big"
 	"sort"
 	"strings"
 )
@@ -18,10 +20,13 @@ const (
 	ClassRestart          = "restart"
 	ClassSignatureInvalid = "signature_invalid"
 	ClassSchemaInvalid    = "schema_invalid"
+	// ClassNumberPrecision is a notice: payload carries an integer outside
+	// +/-2^53, which JCS (ES6 number semantics) cannot represent exactly.
+	ClassNumberPrecision = "number_precision"
 )
 
-// Finding severities. Only ClassRestart is a notice; everything else is an
-// error that makes the report fail.
+// Finding severities. ClassRestart and ClassNumberPrecision are notices;
+// everything else is an error that makes the report fail.
 const (
 	SeverityError  = "error"
 	SeverityNotice = "notice"
@@ -57,6 +62,7 @@ type Report struct {
 	SignedRecords      int             `json:"signed_records"`
 	SignaturesVerified int             `json:"signatures_verified"`
 	UnsignedRecords    int             `json:"unsigned_records"`
+	Notices            int             `json:"notices"`
 	Streams            []StreamSummary `json:"streams"`
 	Findings           []Finding       `json:"findings"`
 }
@@ -131,7 +137,37 @@ func VerifyRecord(raw []byte) (*Record, []Finding) {
 		findings = append(findings, Finding{Class: ClassHashMismatch, Severity: SeverityError,
 			Message: fmt.Sprintf("chain_hash mismatch: recorded %s, computed %s", rec.ChainHash, h.ChainHash)})
 	}
+	if n := unsafeIntegers(rec.Payload); n > 0 {
+		findings = append(findings, Finding{Class: ClassNumberPrecision, Severity: SeverityNotice,
+			Message: fmt.Sprintf("payload contains %d integer(s) outside +/-2^53; JCS renders them as IEEE-754 doubles, transport such values as strings", n)})
+	}
 	return rec, findings
+}
+
+// maxSafeInteger is the largest integer JCS (ES6 number semantics) keeps exact.
+var maxSafeInteger = new(big.Int).Lsh(big.NewInt(1), 53)
+
+// unsafeIntegers counts integer literals in raw JSON whose magnitude exceeds
+// 2^53. Literals with a fraction or exponent are floats by intent and are
+// not counted.
+func unsafeIntegers(raw json.RawMessage) int {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	n := 0
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return n
+		}
+		num, ok := tok.(json.Number)
+		if !ok || strings.ContainsAny(string(num), ".eE") {
+			continue
+		}
+		v, ok := new(big.Int).SetString(string(num), 10)
+		if ok && v.CmpAbs(maxSafeInteger) > 0 {
+			n++
+		}
+	}
 }
 
 type streamState struct {
@@ -207,6 +243,7 @@ func (r *Report) add(fs ...Finding) {
 			r.Errors++
 			r.OK = false
 		case SeverityNotice:
+			r.Notices++
 			if f.Class == ClassRestart {
 				r.Restarts++
 			}

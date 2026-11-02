@@ -26,3 +26,10 @@ tagged. Until then the record format is a draft and may change.
 - `scripts/crosscheck.sh` and `scripts/validate_schema.py`; GitHub Actions
   workflow running Go tests, Python tests, the crosscheck and schema
   validation.
+- `web/`: browser verifier as a static page (HTML, CSS, vanilla JavaScript,
+  no build step, no external scripts). `web/verify.js` implements RFC 8785,
+  hashing, chain and Ed25519 signature checks on WebCrypto and runs in
+  browsers and Node 18+; `web/test/run.mjs` checks it against the vectors,
+  stream fixtures and examples, and `scripts/crosscheck.sh` compares it with
+  Go and Python. `.github/workflows/pages.yml` publishes `web/` to GitHub
+  Pages.

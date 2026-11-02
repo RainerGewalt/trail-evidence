@@ -9,10 +9,10 @@ come with a few rules.
 - `SPEC.md` is normative. The implementations follow it; if they disagree
   with the text, the text wins and the code is fixed, unless the change is
   to the spec itself.
-- Go and Python must stay byte-identical on every vector. Any change to
-  hashing, canonicalisation or the core member set needs both
-  implementations, regenerated vectors, and a passing
-  `scripts/crosscheck.sh`.
+- Go, Python and the browser verifier (`web/verify.js`) must stay
+  byte-identical on every vector. Any change to hashing, canonicalisation
+  or the core member set needs all three implementations, regenerated
+  vectors, and a passing `scripts/crosscheck.sh`.
 - Within `trail.evidence/1`, only additive changes are allowed: new
   optional members, new enumeration values with a documented meaning. Never
   change what is hashed. Anything else is a new major version.
@@ -29,18 +29,21 @@ come with a few rules.
    ```bash
    cd go && gofmt -l . && go vet ./... && go test ./... && cd ..
    cd python && python3 -m unittest discover -s tests && cd ..
+   node web/test/run.mjs
    scripts/crosscheck.sh
    scripts/validate_schema.py --vectors testdata/vectors.json examples/*.jsonl
    ```
 5. Commit with a conventional subject: `type(scope): subject`, for example
    `fix(python): reject padded base64url signatures`. Scopes in use: `spec`,
-   `schema`, `go`, `python`, `vectors`, `examples`, `ci`, `docs`.
+   `schema`, `go`, `python`, `web`, `vectors`, `examples`, `ci`, `docs`.
 
 ## Requirements
 
 - Go 1.22 or newer.
 - Python 3.9 or newer; the package has no runtime dependencies. The
   `jsonschema` package is optional for `scripts/validate_schema.py`.
+- Node 18 or newer for `web/test/run.mjs` and the crosscheck. The page
+  itself has no build step and no dependencies.
 
 ## Security
 

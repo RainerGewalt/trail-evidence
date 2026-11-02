@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Cross-check: the Go reference implementation generates the vectors, Python
-# must reproduce every hash byte for byte, and both verifiers must agree on
-# every stream fixture and example journal.
+# and the browser verifier (web/verify.js, run with Node) must reproduce every
+# hash byte for byte, and all three verifiers must agree on every stream
+# fixture and example journal.
 #
 # Usage: scripts/crosscheck.sh            (picks the newest python3 >= 3.9)
-#        PYTHON=python3.12 scripts/crosscheck.sh
+#        PYTHON=python3.12 NODE=node scripts/crosscheck.sh
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -21,7 +22,13 @@ pick_python() {
   exit 2
 }
 PY="$(pick_python)"
+NODE="${NODE:-node}"
+if ! command -v "$NODE" >/dev/null 2>&1; then
+  echo "crosscheck: node not found (Node 18 or newer is required for web/verify.js)" >&2
+  exit 2
+fi
 echo "python: $PY ($("$PY" --version 2>&1))"
+echo "node:   $NODE ($("$NODE" --version))"
 echo "go:     $(go version)"
 
 TMP="$(mktemp -d)"
@@ -38,7 +45,14 @@ echo "ok: go output is byte-identical to testdata/vectors.json"
 echo "== 2. Python reproduces every vector"
 PYTHONPATH=python "$PY" -m trail_evidence check-vectors "$TMP/vectors.go.json"
 
-echo "== 3. Both verifiers agree on fixtures and examples"
+echo "== 3. JavaScript (web/verify.js) reproduces every vector and fixture"
+"$NODE" web/test/run.mjs
+if ! cmp -s web/examples/transfer-worker.jsonl examples/transfer-worker.jsonl; then
+  echo "FAIL: web/examples/transfer-worker.jsonl differs from examples/transfer-worker.jsonl" >&2
+  exit 1
+fi
+
+echo "== 4. All verifiers agree on fixtures and examples"
 GOBIN="$TMP/trail-evidence"
 (cd go && go build -o "$GOBIN" ./cmd/trail-evidence)
 PUB=testdata/keys/test-ed25519.pub
@@ -49,12 +63,13 @@ for f in examples/*.jsonl testdata/streams/*.jsonl; do
     set +e
     "$GOBIN" verify "$f" "${flags[@]}" --json > "$TMP/go.json"; gorc=$?
     PYTHONPATH=python "$PY" -m trail_evidence verify "$f" "${flags[@]}" --json > "$TMP/py.json"; pyrc=$?
+    "$NODE" web/test/run.mjs report "$f" "${flags[@]}" > "$TMP/js.json"; jsrc=$?
     set -e
     # Compare verdict and the ordered list of (index, class, severity); messages may differ in wording.
-    "$PY" - "$TMP/go.json" "$TMP/py.json" "$f" "$mode" "$gorc" "$pyrc" <<'PYEOF' || mismatch=1
+    "$PY" - "$TMP/go.json" "$gorc" "$f" "$mode" python "$TMP/py.json" "$pyrc" javascript "$TMP/js.json" "$jsrc" <<'PYEOF' || mismatch=1
 import json, sys
-g = json.load(open(sys.argv[1])); p = json.load(open(sys.argv[2]))
-f, mode, gorc, pyrc = sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6]
+g = json.load(open(sys.argv[1])); gorc = sys.argv[2]
+f, mode = sys.argv[3], sys.argv[4]
 def shape(r):
     return {
         "ok": r["ok"], "records": r["records"], "errors": r["errors"], "restarts": r["restarts"],
@@ -62,19 +77,26 @@ def shape(r):
         "streams": [(s["stream_id"], s["records"], s["last_seq"], s["last_chain_hash"], s["restarts"]) for s in r["streams"]],
         "findings": [(x["index"], x["class"], x["severity"]) for x in r["findings"]],
     }
-sg, sp = shape(g), shape(p)
-if sg != sp or gorc != pyrc:
-    print(f"MISMATCH {f} [{mode}] go rc={gorc} py rc={pyrc}")
-    for k in sg:
-        if sg[k] != sp[k]:
-            print(f"  {k}: go={sg[k]} py={sp[k]}")
+sg = shape(g)
+bad = False
+others = sys.argv[5:]
+for i in range(0, len(others), 3):
+    label, path, rc = others[i], others[i + 1], others[i + 2]
+    so = shape(json.load(open(path)))
+    if sg != so or gorc != rc:
+        bad = True
+        print(f"MISMATCH {f} [{mode}] go rc={gorc} {label} rc={rc}")
+        for k in sg:
+            if sg[k] != so[k]:
+                print(f"  {k}: go={sg[k]} {label}={so[k]}")
+if bad:
     sys.exit(1)
-print(f"ok: {f} [{mode}] ok={sg['ok']} findings={len(sg['findings'])} rc={gorc}")
+print(f"ok: {f} [{mode}] ok={sg['ok']} findings={len(sg['findings'])} rc={gorc} (go, python, javascript)")
 PYEOF
   done
 done
 if [ "$mismatch" -ne 0 ]; then
-  echo "FAIL: Go and Python verifiers disagree" >&2
+  echo "FAIL: the verifiers disagree" >&2
   exit 1
 fi
 echo "== crosscheck passed"

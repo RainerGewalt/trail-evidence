@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="Verify a Trail Evidence journal (JSON Lines) in the browser: hashes, chain links, sequence numbers and Ed25519 signatures. Nothing is uploaded.">
+  <title>Trail Evidence Verifier</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="site-header">
+    <h1>Trail Evidence Verifier</h1>
+    <p class="lede">
+      Drop a <code>trail.evidence/1</code> journal (JSON Lines, one record per line)
+      and see whether its hash chain is intact. Verification runs entirely in this
+      browser tab: <strong>the file is not uploaded anywhere.</strong>
+    </p>
+  </header>
+
+  <main>
+    <section class="panel" aria-labelledby="input-heading">
+      <h2 id="input-heading" class="visually-hidden">Input</h2>
+
+      <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-describedby="dropzone-hint">
+        <p class="dropzone-title">Drop a <code>.jsonl</code> file here</p>
+        <p id="dropzone-hint" class="dropzone-hint">
+          or <label for="file-input" class="link-like">choose a file</label>,
+          or <a href="#" id="load-example">load the example journal</a>
+        </p>
+        <input type="file" id="file-input" accept=".jsonl,.json,.ndjson,text/plain,application/json" hidden>
+        <p id="file-info" class="file-info" aria-live="polite"></p>
+      </div>
+
+      <div class="field">
+        <label for="pubkey">Public key <span class="muted">(optional, Ed25519: 64 hex characters, base64url, or a PEM block)</span></label>
+        <input type="text" id="pubkey" autocomplete="off" spellcheck="false" placeholder="d75a9801…  leave empty to skip signature checks">
+        <p id="pubkey-error" class="field-error" role="alert"></p>
+      </div>
+
+      <div class="field field-inline">
+        <input type="checkbox" id="require-signatures" disabled>
+        <label for="require-signatures">Require a signature on every record <span class="muted">(needs a public key)</span></label>
+      </div>
+
+      <div class="actions">
+        <button type="button" id="verify" class="primary" disabled>Verify</button>
+        <span id="status" class="status" aria-live="polite"></span>
+      </div>
+    </section>
+
+    <section id="result" class="panel result" hidden aria-live="polite">
+      <div id="verdict" class="verdict">
+        <span id="verdict-label" class="verdict-label"></span>
+        <span id="verdict-summary" class="verdict-summary"></span>
+      </div>
+
+      <p id="signature-note" class="note" hidden></p>
+      <p id="crypto-note" class="note" hidden></p>
+
+      <h2>Findings by class</h2>
+      <ul id="counters" class="counters"></ul>
+
+      <h2>Streams</h2>
+      <ul id="streams" class="cards"></ul>
+
+      <h2>Findings</h2>
+      <p id="no-findings" class="muted" hidden>No findings. Every hash recomputes, every link and sequence number matches.</p>
+      <ol id="findings" class="cards findings"></ol>
+
+      <details class="raw-report">
+        <summary>JSON report</summary>
+        <p class="muted">Same members as <code>trail-evidence verify --json</code>.</p>
+        <button type="button" id="copy-report" class="secondary">Copy</button>
+        <pre id="report-json"></pre>
+      </details>
+    </section>
+
+    <section class="panel explain">
+      <h2>What a passing result means</h2>
+      <p>
+        Every <code>content_hash</code> and <code>chain_hash</code> was recomputed from the
+        record itself (RFC 8785 canonical JSON, SHA-256) and matched, every record links to
+        the declared <code>chain_hash</code> of its predecessor, and sequence numbers increase
+        by one per stream. No record in this file was altered, removed or reordered relative to
+        the others.
+      </p>
+      <p>
+        It does not say that the payloads are true, that the clocks were right, or that nobody
+        rewrote the whole file. Signatures bind the chain to a key; give the public key above to
+        have them checked. Anchoring the latest <code>chain_hash</code> elsewhere binds it to a
+        point in time. The specification lists these limits in section 6.3.
+      </p>
+      <p>
+        Classes: <code>schema_invalid</code>, <code>hash_mismatch</code>, <code>chain_break</code>,
+        <code>seq_gap</code> and <code>signature_invalid</code> are errors and fail the journal.
+        <code>restart</code> and <code>number_precision</code> are notices.
+      </p>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <p>
+      <a href="https://github.com/RainerGewalt/trail-evidence">Repository</a> ·
+      <a href="https://github.com/RainerGewalt/trail-evidence/blob/main/SPEC.md">Specification</a> ·
+      Format <code>trail.evidence/1</code> (v0.1 draft) ·
+      Same results as the Go and Python verifiers, checked by the test suite.
+    </p>
+    <p>Hashing uses WebCrypto; Ed25519 signature checks need a browser whose WebCrypto implements Ed25519 (current Chrome, Firefox and Safari). Otherwise signatures are reported as not checked.</p>
+  </footer>
+
+  <script src="verify.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

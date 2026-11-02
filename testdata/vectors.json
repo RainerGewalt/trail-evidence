@@ -1,0 +1,532 @@
+{
+  "schema": "trail.evidence/1",
+  "generated_by": "github.com/RainerGewalt/trail-evidence/go (reference implementation)",
+  "note": "Every implementation MUST reproduce expected_payload_jcs, expected_content_hash, expected_core_jcs and expected_chain_hash byte for byte. For vectors with expected_valid=false the expected_* values are the correct ones and the record carries the defect.",
+  "test_key": {
+    "note": "TEST KEY ONLY. This is RFC 8032 section 7.1 test vector 1 and is public knowledge. Never sign real evidence with it.",
+    "seed_hex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+    "public_hex": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+    "key_id": "ed25519:21fe31dfa154a261"
+  },
+  "vectors": [
+    {
+      "name": "genesis-minimal",
+      "description": "First record of a stream: prev_hash is the genesis value, no optional members. Payload keys are given out of order and must be sorted by JCS.",
+      "record": {
+        "schema": "trail.evidence/1",
+        "producer": {
+          "kind": "other",
+          "id": "ref-producer",
+          "version": "0.1.0"
+        },
+        "stream_id": "vectors",
+        "seq": 0,
+        "prev_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "event_type": "test.record.created",
+        "time": {
+          "recorded_at": "2026-11-02T08:00:00.000Z",
+          "source": "system"
+        },
+        "actor": {
+          "auth": "none"
+        },
+        "policy": {
+          "id": "none",
+          "version": "0",
+          "hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "payload": {
+          "b": 1,
+          "a": "x"
+        },
+        "content_hash": "sha256:cdab067e9f3beb32d1252cfd63e492592fecbf591b0d08cadb24bb17f3864246",
+        "chain_hash": "sha256:875561615cd2323290af6004f0eceecae8b5beb23fb82d8aff7c67347fb3b23b"
+      },
+      "expected_payload_jcs": "{\"a\":\"x\",\"b\":1}",
+      "expected_content_hash": "sha256:cdab067e9f3beb32d1252cfd63e492592fecbf591b0d08cadb24bb17f3864246",
+      "expected_core_jcs": "{\"actor\":{\"auth\":\"none\"},\"content_hash\":\"sha256:cdab067e9f3beb32d1252cfd63e492592fecbf591b0d08cadb24bb17f3864246\",\"event_type\":\"test.record.created\",\"policy\":{\"hash\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"id\":\"none\",\"version\":\"0\"},\"prev_hash\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"producer\":{\"id\":\"ref-producer\",\"kind\":\"other\",\"version\":\"0.1.0\"},\"schema\":\"trail.evidence/1\",\"seq\":0,\"stream_id\":\"vectors\",\"time\":{\"recorded_at\":\"2026-11-02T08:00:00.000Z\",\"source\":\"system\"}}",
+      "expected_chain_hash": "sha256:875561615cd2323290af6004f0eceecae8b5beb23fb82d8aff7c67347fb3b23b",
+      "expected_valid": true
+    },
+    {
+      "name": "second-chained",
+      "description": "Second record: prev_hash equals the chain_hash of genesis-minimal; seq is 1; optional time, actor and policy members are present and therefore part of the core.",
+      "record": {
+        "schema": "trail.evidence/1",
+        "producer": {
+          "kind": "other",
+          "id": "ref-producer",
+          "version": "0.1.0"
+        },
+        "stream_id": "vectors",
+        "seq": 1,
+        "prev_hash": "sha256:875561615cd2323290af6004f0eceecae8b5beb23fb82d8aff7c67347fb3b23b",
+        "event_type": "test.record.created",
+        "time": {
+          "recorded_at": "2026-11-02T08:00:01.000Z",
+          "occurred_at": "2026-11-02T08:00:00.950Z",
+          "read_at": "2026-11-02T08:00:00.990Z",
+          "source": "system"
+        },
+        "actor": {
+          "auth": "operator-token",
+          "id": "operator-7",
+          "roles": [
+            "auditor",
+            "operator"
+          ]
+        },
+        "policy": {
+          "id": "policy-a",
+          "version": "3",
+          "hash": "sha256:e82236546386950c740c385313466eef1faf097178ef0f283e7c64a1a510f7f3",
+          "status": "active",
+          "kind": "transfer-policy"
+        },
+        "payload": {
+          "message": "second",
+          "count": 2,
+          "ok": true,
+          "none": null
+        },
+        "content_hash": "sha256:9ddf988e278e0eab0ab76b74c9ba6584384ba386a0a3ecf8a3480cf2af0133d2",
+        "chain_hash": "sha256:7ec64485e0a2244451c40831c6f6ec2853733fe24e0a8619d18f4f4a8160f592"
+      },
+      "expected_payload_jcs": "{\"count\":2,\"message\":\"second\",\"none\":null,\"ok\":true}",
+      "expected_content_hash": "sha256:9ddf988e278e0eab0ab76b74c9ba6584384ba386a0a3ecf8a3480cf2af0133d2",
+      "expected_core_jcs": "{\"actor\":{\"auth\":\"operator-token\",\"id\":\"operator-7\",\"roles\":[\"auditor\",\"operator\"]},\"content_hash\":\"sha256:9ddf988e278e0eab0ab76b74c9ba6584384ba386a0a3ecf8a3480cf2af0133d2\",\"event_type\":\"test.record.created\",\"policy\":{\"hash\":\"sha256:e82236546386950c740c385313466eef1faf097178ef0f283e7c64a1a510f7f3\",\"id\":\"policy-a\",\"kind\":\"transfer-policy\",\"status\":\"active\",\"version\":\"3\"},\"prev_hash\":\"sha256:875561615cd2323290af6004f0eceecae8b5beb23fb82d8aff7c67347fb3b23b\",\"producer\":{\"id\":\"ref-producer\",\"kind\":\"other\",\"version\":\"0.1.0\"},\"schema\":\"trail.evidence/1\",\"seq\":1,\"stream_id\":\"vectors\",\"time\":{\"occurred_at\":\"2026-11-02T08:00:00.950Z\",\"read_at\":\"2026-11-02T08:00:00.990Z\",\"recorded_at\":\"2026-11-02T08:00:01.000Z\",\"source\":\"system\"}}",
+      "expected_chain_hash": "sha256:7ec64485e0a2244451c40831c6f6ec2853733fe24e0a8619d18f4f4a8160f592",
+      "expected_valid": true
+    },
+    {
+      "name": "chain-restart",
+      "description": "Restart record: seq returns to 0, chain_restart is true, anchor_hash carries the last chain_hash of the previous segment and prev_hash equals anchor_hash. Both members are part of the core.",
+      "record": {
+        "schema": "trail.evidence/1",
+        "producer": {
+          "kind": "other",
+          "id": "ref-producer",
+          "version": "0.1.0"
+        },
+        "stream_id": "vectors",
+        "seq": 0,
+        "chain_restart": true,
+        "anchor_hash": "sha256:7ec64485e0a2244451c40831c6f6ec2853733fe24e0a8619d18f4f4a8160f592",
+        "prev_hash": "sha256:7ec64485e0a2244451c40831c6f6ec2853733fe24e0a8619d18f4f4a8160f592",
+        "event_type": "test.chain.restarted",
+        "time": {
+          "recorded_at": "2026-11-02T09:00:00.000Z",
+          "source": "system"
+        },
+        "actor": {
+          "auth": "none"
+        },
+        "policy": {
+          "id": "none",
+          "version": "0",
+          "hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "payload": {
+          "reason": "process restarted"
+        },
+        "content_hash": "sha256:091fa1cd9b5572b46146ad371fe472c8929c582462c8ca64dcc8f3062860947b",
+        "chain_hash": "sha256:e875e132edf29fed1d5bf12692e48883198089464170c9ce6a75b313567db3d0"
+      },
+      "expected_payload_jcs": "{\"reason\":\"process restarted\"}",
+      "expected_content_hash": "sha256:091fa1cd9b5572b46146ad371fe472c8929c582462c8ca64dcc8f3062860947b",
+      "expected_core_jcs": "{\"actor\":{\"auth\":\"none\"},\"anchor_hash\":\"sha256:7ec64485e0a2244451c40831c6f6ec2853733fe24e0a8619d18f4f4a8160f592\",\"chain_restart\":true,\"content_hash\":\"sha256:091fa1cd9b5572b46146ad371fe472c8929c582462c8ca64dcc8f3062860947b\",\"event_type\":\"test.chain.restarted\",\"policy\":{\"hash\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"id\":\"none\",\"version\":\"0\"},\"prev_hash\":\"sha256:7ec64485e0a2244451c40831c6f6ec2853733fe24e0a8619d18f4f4a8160f592\",\"producer\":{\"id\":\"ref-producer\",\"kind\":\"other\",\"version\":\"0.1.0\"},\"schema\":\"trail.evidence/1\",\"seq\":0,\"stream_id\":\"vectors\",\"time\":{\"recorded_at\":\"2026-11-02T09:00:00.000Z\",\"source\":\"system\"}}",
+      "expected_chain_hash": "sha256:e875e132edf29fed1d5bf12692e48883198089464170c9ce6a75b313567db3d0",
+      "expected_valid": true
+    },
+    {
+      "name": "context-absent",
+      "description": "Observation record without context. Compare with context-present: both must have the same chain_hash.",
+      "record": {
+        "schema": "trail.evidence/1",
+        "producer": {
+          "kind": "source-bridge",
+          "id": "bridge-01",
+          "version": "0.1.0"
+        },
+        "stream_id": "bridge-01/plc-7",
+        "seq": 0,
+        "prev_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "event_type": "source.value.observed",
+        "time": {
+          "recorded_at": "2026-11-02T10:00:00.000Z",
+          "occurred_at": "2026-11-02T09:59:59.800Z",
+          "read_at": "2026-11-02T09:59:59.900Z",
+          "source": "system"
+        },
+        "actor": {
+          "auth": "self-declared",
+          "id": "bridge-01"
+        },
+        "policy": {
+          "id": "plc-7-addressspace",
+          "version": "2026-10-30",
+          "hash": "sha256:c5929999bff4f34e5f9f6c366fd729c157eec13eec2b1d18b815155d499b2429",
+          "kind": "addressspace"
+        },
+        "payload": {
+          "native_node_id": "ns=2;s=Line1.Temp",
+          "entity_key": "line1/temp",
+          "value": "21.5",
+          "quality": "good"
+        },
+        "content_hash": "sha256:75a19a375b39125bdef5e5de34491e6f0f36969e5ece459d618626e95294d6eb",
+        "chain_hash": "sha256:4796f68bcf927e5334a34aded0e7075ab63328625ee39fe216c2ff94dd5668e9"
+      },
+      "expected_payload_jcs": "{\"entity_key\":\"line1/temp\",\"native_node_id\":\"ns=2;s=Line1.Temp\",\"quality\":\"good\",\"value\":\"21.5\"}",
+      "expected_content_hash": "sha256:75a19a375b39125bdef5e5de34491e6f0f36969e5ece459d618626e95294d6eb",
+      "expected_core_jcs": "{\"actor\":{\"auth\":\"self-declared\",\"id\":\"bridge-01\"},\"content_hash\":\"sha256:75a19a375b39125bdef5e5de34491e6f0f36969e5ece459d618626e95294d6eb\",\"event_type\":\"source.value.observed\",\"policy\":{\"hash\":\"sha256:c5929999bff4f34e5f9f6c366fd729c157eec13eec2b1d18b815155d499b2429\",\"id\":\"plc-7-addressspace\",\"kind\":\"addressspace\",\"version\":\"2026-10-30\"},\"prev_hash\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"producer\":{\"id\":\"bridge-01\",\"kind\":\"source-bridge\",\"version\":\"0.1.0\"},\"schema\":\"trail.evidence/1\",\"seq\":0,\"stream_id\":\"bridge-01/plc-7\",\"time\":{\"occurred_at\":\"2026-11-02T09:59:59.800Z\",\"read_at\":\"2026-11-02T09:59:59.900Z\",\"recorded_at\":\"2026-11-02T10:00:00.000Z\",\"source\":\"system\"}}",
+      "expected_chain_hash": "sha256:4796f68bcf927e5334a34aded0e7075ab63328625ee39fe216c2ff94dd5668e9",
+      "expected_valid": true
+    },
+    {
+      "name": "context-present",
+      "description": "Same record as context-absent plus context, correlation_id, job_id and decision_id. None of these members is part of the core, so content_hash and chain_hash are unchanged.",
+      "record": {
+        "schema": "trail.evidence/1",
+        "producer": {
+          "kind": "source-bridge",
+          "id": "bridge-01",
+          "version": "0.1.0"
+        },
+        "stream_id": "bridge-01/plc-7",
+        "seq": 0,
+        "prev_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "event_type": "source.value.observed",
+        "time": {
+          "recorded_at": "2026-11-02T10:00:00.000Z",
+          "occurred_at": "2026-11-02T09:59:59.800Z",
+          "read_at": "2026-11-02T09:59:59.900Z",
+          "source": "system"
+        },
+        "actor": {
+          "auth": "self-declared",
+          "id": "bridge-01"
+        },
+        "policy": {
+          "id": "plc-7-addressspace",
+          "version": "2026-10-30",
+          "hash": "sha256:c5929999bff4f34e5f9f6c366fd729c157eec13eec2b1d18b815155d499b2429",
+          "kind": "addressspace"
+        },
+        "correlation_id": "corr-0001",
+        "job_id": "job-42",
+        "decision_id": "dec-9",
+        "payload": {
+          "native_node_id": "ns=2;s=Line1.Temp",
+          "entity_key": "line1/temp",
+          "value": "21.5",
+          "quality": "good"
+        },
+        "content_hash": "sha256:75a19a375b39125bdef5e5de34491e6f0f36969e5ece459d618626e95294d6eb",
+        "chain_hash": "sha256:4796f68bcf927e5334a34aded0e7075ab63328625ee39fe216c2ff94dd5668e9",
+        "context": {
+          "source_type": "opcua",
+          "channel": "subscription",
+          "source_address": "opc.tcp://plc-7:4840",
+          "note": "context is informational and never hashed"
+        }
+      },
+      "expected_payload_jcs": "{\"entity_key\":\"line1/temp\",\"native_node_id\":\"ns=2;s=Line1.Temp\",\"quality\":\"good\",\"value\":\"21.5\"}",
+      "expected_content_hash": "sha256:75a19a375b39125bdef5e5de34491e6f0f36969e5ece459d618626e95294d6eb",
+      "expected_core_jcs": "{\"actor\":{\"auth\":\"self-declared\",\"id\":\"bridge-01\"},\"content_hash\":\"sha256:75a19a375b39125bdef5e5de34491e6f0f36969e5ece459d618626e95294d6eb\",\"event_type\":\"source.value.observed\",\"policy\":{\"hash\":\"sha256:c5929999bff4f34e5f9f6c366fd729c157eec13eec2b1d18b815155d499b2429\",\"id\":\"plc-7-addressspace\",\"kind\":\"addressspace\",\"version\":\"2026-10-30\"},\"prev_hash\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"producer\":{\"id\":\"bridge-01\",\"kind\":\"source-bridge\",\"version\":\"0.1.0\"},\"schema\":\"trail.evidence/1\",\"seq\":0,\"stream_id\":\"bridge-01/plc-7\",\"time\":{\"occurred_at\":\"2026-11-02T09:59:59.800Z\",\"read_at\":\"2026-11-02T09:59:59.900Z\",\"recorded_at\":\"2026-11-02T10:00:00.000Z\",\"source\":\"system\"}}",
+      "expected_chain_hash": "sha256:4796f68bcf927e5334a34aded0e7075ab63328625ee39fe216c2ff94dd5668e9",
+      "expected_valid": true
+    },
+    {
+      "name": "redaction",
+      "description": "The password was masked before content_hash was computed and the masked pointer is listed in redaction.fields. The redaction member itself is not part of the core.",
+      "record": {
+        "schema": "trail.evidence/1",
+        "producer": {
+          "kind": "transfer-worker",
+          "id": "worker-01",
+          "version": "0.1.0"
+        },
+        "stream_id": "worker-01",
+        "seq": 0,
+        "prev_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "event_type": "transfer.job.result",
+        "time": {
+          "recorded_at": "2026-11-02T11:00:00.000Z",
+          "source": "system"
+        },
+        "actor": {
+          "auth": "self-declared",
+          "id": "alice"
+        },
+        "policy": {
+          "id": "archive-policy",
+          "version": "7",
+          "hash": "sha256:c6726dae6b7fafe5dccaaee819b61cf10786eb86ad46716b6389cfe7f3d81dff",
+          "status": "approved",
+          "kind": "transfer-policy"
+        },
+        "payload": {
+          "action": "copy",
+          "source": "sftp://files.example/in/report.csv",
+          "target": "s3://archive/2026/report.csv",
+          "status": "ok",
+          "credentials": {
+            "user": "svc-transfer",
+            "password": "***"
+          },
+          "command_hash": "sha256:5f2b1b3d8a1c4b0e6b7d3f9a2c8e1d0f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d"
+        },
+        "redaction": {
+          "fields": [
+            "/credentials/password"
+          ],
+          "method": "mask"
+        },
+        "content_hash": "sha256:6fee82ef1695e68768318cf5d40120a3abc3482fb224ac619b2b4ab078813917",
+        "chain_hash": "sha256:0baf45421cc307904092465db7a047cd1f6476a2ac28c3c0d918d57cb63ef121"
+      },
+      "expected_payload_jcs": "{\"action\":\"copy\",\"command_hash\":\"sha256:5f2b1b3d8a1c4b0e6b7d3f9a2c8e1d0f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d\",\"credentials\":{\"password\":\"***\",\"user\":\"svc-transfer\"},\"source\":\"sftp://files.example/in/report.csv\",\"status\":\"ok\",\"target\":\"s3://archive/2026/report.csv\"}",
+      "expected_content_hash": "sha256:6fee82ef1695e68768318cf5d40120a3abc3482fb224ac619b2b4ab078813917",
+      "expected_core_jcs": "{\"actor\":{\"auth\":\"self-declared\",\"id\":\"alice\"},\"content_hash\":\"sha256:6fee82ef1695e68768318cf5d40120a3abc3482fb224ac619b2b4ab078813917\",\"event_type\":\"transfer.job.result\",\"policy\":{\"hash\":\"sha256:c6726dae6b7fafe5dccaaee819b61cf10786eb86ad46716b6389cfe7f3d81dff\",\"id\":\"archive-policy\",\"kind\":\"transfer-policy\",\"status\":\"approved\",\"version\":\"7\"},\"prev_hash\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"producer\":{\"id\":\"worker-01\",\"kind\":\"transfer-worker\",\"version\":\"0.1.0\"},\"schema\":\"trail.evidence/1\",\"seq\":0,\"stream_id\":\"worker-01\",\"time\":{\"recorded_at\":\"2026-11-02T11:00:00.000Z\",\"source\":\"system\"}}",
+      "expected_chain_hash": "sha256:0baf45421cc307904092465db7a047cd1f6476a2ac28c3c0d918d57cb63ef121",
+      "expected_valid": true
+    },
+    {
+      "name": "jcs-edge-cases",
+      "description": "Payload exercises RFC 8785: ES6 number formatting (1.0 -> 1, 1e21 -> 1e+21, -0.0 -> 0, 9007199254740993 -> 9007199254740992), minimal string escaping with lowercase \\u00xx, literal non-ASCII, and member sorting by UTF-16 code units (U+1F680 before U+FF01).",
+      "record": {
+        "schema": "trail.evidence/1",
+        "producer": {
+          "kind": "other",
+          "id": "ref-producer",
+          "version": "0.1.0"
+        },
+        "stream_id": "jcs",
+        "seq": 0,
+        "prev_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "event_type": "test.jcs.edgecases",
+        "time": {
+          "recorded_at": "2026-11-02T12:00:00.000Z",
+          "source": "system"
+        },
+        "actor": {
+          "auth": "none"
+        },
+        "policy": {
+          "id": "none",
+          "version": "0",
+          "hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "payload": {
+          "z_last": "z",
+          "float_one": 1.0,
+          "int_one": 1,
+          "exp_big": 1e21,
+          "below_exp": 123456789012345680000,
+          "small": 0.000001,
+          "smaller": 1e-7,
+          "neg_zero": -0.0,
+          "upper_exp": 1E+2,
+          "beyond_2_53": 9007199254740993,
+          "denormal": 5e-324,
+          "huge": 1.5e300,
+          "tenth": 0.1,
+          "neg": -42.25,
+          "empty_obj": {},
+          "empty_arr": [],
+          "empty_str": "",
+          "nested": {
+            "y": [
+              1,
+              {
+                "b": 2,
+                "a": 1
+              }
+            ],
+            "x": null
+          },
+          "ctrl": "tab\tnewline\ncr\rbs\bff\fnul\u0000unit\u001fdel\u007fquote\"backslash\\slash/",
+          "umlaut": "Füße und Größe",
+          "emoji": "🚀 Rakete",
+          "mixed": "αβγ 日本語 עברית",
+          "！": "fullwidth exclamation U+FF01",
+          "🚀": "rocket U+1F680 sorts before U+FF01 in UTF-16",
+          "€": "euro U+20AC",
+          "ä": "a umlaut U+00E4",
+          "Z": "upper Z sorts before lower a",
+          "a": "lower a"
+        },
+        "content_hash": "sha256:b7299d99bbdff8f377a1cfe287d1a0326842548f6f7b4e946e62f53ed5af612f",
+        "chain_hash": "sha256:dd9635d44654ab348e7c30ac4179340826515bf9c8312c1382dcad0ab55bf082"
+      },
+      "expected_payload_jcs": "{\"Z\":\"upper Z sorts before lower a\",\"a\":\"lower a\",\"below_exp\":123456789012345680000,\"beyond_2_53\":9007199254740992,\"ctrl\":\"tab\\tnewline\\ncr\\rbs\\bff\\fnul\\u0000unit\\u001fdelquote\\\"backslash\\\\slash/\",\"denormal\":5e-324,\"emoji\":\"🚀 Rakete\",\"empty_arr\":[],\"empty_obj\":{},\"empty_str\":\"\",\"exp_big\":1e+21,\"float_one\":1,\"huge\":1.5e+300,\"int_one\":1,\"mixed\":\"αβγ 日本語 עברית\",\"neg\":-42.25,\"neg_zero\":0,\"nested\":{\"x\":null,\"y\":[1,{\"a\":1,\"b\":2}]},\"small\":0.000001,\"smaller\":1e-7,\"tenth\":0.1,\"umlaut\":\"Füße und Größe\",\"upper_exp\":100,\"z_last\":\"z\",\"ä\":\"a umlaut U+00E4\",\"€\":\"euro U+20AC\",\"🚀\":\"rocket U+1F680 sorts before U+FF01 in UTF-16\",\"！\":\"fullwidth exclamation U+FF01\"}",
+      "expected_content_hash": "sha256:b7299d99bbdff8f377a1cfe287d1a0326842548f6f7b4e946e62f53ed5af612f",
+      "expected_core_jcs": "{\"actor\":{\"auth\":\"none\"},\"content_hash\":\"sha256:b7299d99bbdff8f377a1cfe287d1a0326842548f6f7b4e946e62f53ed5af612f\",\"event_type\":\"test.jcs.edgecases\",\"policy\":{\"hash\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"id\":\"none\",\"version\":\"0\"},\"prev_hash\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"producer\":{\"id\":\"ref-producer\",\"kind\":\"other\",\"version\":\"0.1.0\"},\"schema\":\"trail.evidence/1\",\"seq\":0,\"stream_id\":\"jcs\",\"time\":{\"recorded_at\":\"2026-11-02T12:00:00.000Z\",\"source\":\"system\"}}",
+      "expected_chain_hash": "sha256:dd9635d44654ab348e7c30ac4179340826515bf9c8312c1382dcad0ab55bf082",
+      "expected_valid": true
+    },
+    {
+      "name": "signed",
+      "description": "Record signed with the TEST KEY: Ed25519 over the ASCII bytes of the chain_hash string, sig as base64url without padding. The signature member is not part of the core.",
+      "record": {
+        "schema": "trail.evidence/1",
+        "producer": {
+          "kind": "other",
+          "id": "ref-producer",
+          "version": "0.1.0"
+        },
+        "stream_id": "signed",
+        "seq": 0,
+        "prev_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "event_type": "test.record.created",
+        "time": {
+          "recorded_at": "2026-11-02T08:00:01.000Z",
+          "occurred_at": "2026-11-02T08:00:00.950Z",
+          "read_at": "2026-11-02T08:00:00.990Z",
+          "source": "system"
+        },
+        "actor": {
+          "auth": "operator-token",
+          "id": "operator-7",
+          "roles": [
+            "auditor",
+            "operator"
+          ]
+        },
+        "policy": {
+          "id": "policy-a",
+          "version": "3",
+          "hash": "sha256:e82236546386950c740c385313466eef1faf097178ef0f283e7c64a1a510f7f3",
+          "status": "active",
+          "kind": "transfer-policy"
+        },
+        "payload": {
+          "message": "second",
+          "count": 2,
+          "ok": true,
+          "none": null
+        },
+        "content_hash": "sha256:9ddf988e278e0eab0ab76b74c9ba6584384ba386a0a3ecf8a3480cf2af0133d2",
+        "chain_hash": "sha256:42d7a864a0ec84c415d1453bbc2bb9d143c6aa3c917498d52a132535cd4f570a",
+        "signature": {
+          "alg": "ed25519",
+          "key_id": "ed25519:21fe31dfa154a261",
+          "sig": "6a-mrNcqIzqD11EFEkSlqzU2R1Ma9L9N8_nYmIw11qgBa7Bg27Z3yZeLiNZP-JvqlDRUe77Xoni_z9URCuKzCA"
+        }
+      },
+      "expected_payload_jcs": "{\"count\":2,\"message\":\"second\",\"none\":null,\"ok\":true}",
+      "expected_content_hash": "sha256:9ddf988e278e0eab0ab76b74c9ba6584384ba386a0a3ecf8a3480cf2af0133d2",
+      "expected_core_jcs": "{\"actor\":{\"auth\":\"operator-token\",\"id\":\"operator-7\",\"roles\":[\"auditor\",\"operator\"]},\"content_hash\":\"sha256:9ddf988e278e0eab0ab76b74c9ba6584384ba386a0a3ecf8a3480cf2af0133d2\",\"event_type\":\"test.record.created\",\"policy\":{\"hash\":\"sha256:e82236546386950c740c385313466eef1faf097178ef0f283e7c64a1a510f7f3\",\"id\":\"policy-a\",\"kind\":\"transfer-policy\",\"status\":\"active\",\"version\":\"3\"},\"prev_hash\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"producer\":{\"id\":\"ref-producer\",\"kind\":\"other\",\"version\":\"0.1.0\"},\"schema\":\"trail.evidence/1\",\"seq\":0,\"stream_id\":\"signed\",\"time\":{\"occurred_at\":\"2026-11-02T08:00:00.950Z\",\"read_at\":\"2026-11-02T08:00:00.990Z\",\"recorded_at\":\"2026-11-02T08:00:01.000Z\",\"source\":\"system\"}}",
+      "expected_chain_hash": "sha256:42d7a864a0ec84c415d1453bbc2bb9d143c6aa3c917498d52a132535cd4f570a",
+      "expected_valid": true
+    },
+    {
+      "name": "invalid-chain-hash",
+      "description": "second-chained with the last hex digit of chain_hash changed. A verifier must report hash_mismatch; expected_chain_hash is the correct value.",
+      "record": {
+        "schema": "trail.evidence/1",
+        "producer": {
+          "kind": "other",
+          "id": "ref-producer",
+          "version": "0.1.0"
+        },
+        "stream_id": "vectors",
+        "seq": 1,
+        "prev_hash": "sha256:875561615cd2323290af6004f0eceecae8b5beb23fb82d8aff7c67347fb3b23b",
+        "event_type": "test.record.created",
+        "time": {
+          "recorded_at": "2026-11-02T08:00:01.000Z",
+          "occurred_at": "2026-11-02T08:00:00.950Z",
+          "read_at": "2026-11-02T08:00:00.990Z",
+          "source": "system"
+        },
+        "actor": {
+          "auth": "operator-token",
+          "id": "operator-7",
+          "roles": [
+            "auditor",
+            "operator"
+          ]
+        },
+        "policy": {
+          "id": "policy-a",
+          "version": "3",
+          "hash": "sha256:e82236546386950c740c385313466eef1faf097178ef0f283e7c64a1a510f7f3",
+          "status": "active",
+          "kind": "transfer-policy"
+        },
+        "payload": {
+          "message": "second",
+          "count": 2,
+          "ok": true,
+          "none": null
+        },
+        "content_hash": "sha256:9ddf988e278e0eab0ab76b74c9ba6584384ba386a0a3ecf8a3480cf2af0133d2",
+        "chain_hash": "sha256:7ec64485e0a2244451c40831c6f6ec2853733fe24e0a8619d18f4f4a8160f590"
+      },
+      "expected_payload_jcs": "{\"count\":2,\"message\":\"second\",\"none\":null,\"ok\":true}",
+      "expected_content_hash": "sha256:9ddf988e278e0eab0ab76b74c9ba6584384ba386a0a3ecf8a3480cf2af0133d2",
+      "expected_core_jcs": "{\"actor\":{\"auth\":\"operator-token\",\"id\":\"operator-7\",\"roles\":[\"auditor\",\"operator\"]},\"content_hash\":\"sha256:9ddf988e278e0eab0ab76b74c9ba6584384ba386a0a3ecf8a3480cf2af0133d2\",\"event_type\":\"test.record.created\",\"policy\":{\"hash\":\"sha256:e82236546386950c740c385313466eef1faf097178ef0f283e7c64a1a510f7f3\",\"id\":\"policy-a\",\"kind\":\"transfer-policy\",\"status\":\"active\",\"version\":\"3\"},\"prev_hash\":\"sha256:875561615cd2323290af6004f0eceecae8b5beb23fb82d8aff7c67347fb3b23b\",\"producer\":{\"id\":\"ref-producer\",\"kind\":\"other\",\"version\":\"0.1.0\"},\"schema\":\"trail.evidence/1\",\"seq\":1,\"stream_id\":\"vectors\",\"time\":{\"occurred_at\":\"2026-11-02T08:00:00.950Z\",\"read_at\":\"2026-11-02T08:00:00.990Z\",\"recorded_at\":\"2026-11-02T08:00:01.000Z\",\"source\":\"system\"}}",
+      "expected_chain_hash": "sha256:7ec64485e0a2244451c40831c6f6ec2853733fe24e0a8619d18f4f4a8160f592",
+      "expected_valid": false,
+      "expected_error": "hash_mismatch"
+    },
+    {
+      "name": "invalid-content-hash",
+      "description": "redaction with the payload altered after sealing. content_hash no longer matches, and because the core carries the recomputed content_hash, chain_hash differs as well. A verifier must report hash_mismatch.",
+      "record": {
+        "schema": "trail.evidence/1",
+        "producer": {
+          "kind": "transfer-worker",
+          "id": "worker-01",
+          "version": "0.1.0"
+        },
+        "stream_id": "worker-01",
+        "seq": 0,
+        "prev_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "event_type": "transfer.job.result",
+        "time": {
+          "recorded_at": "2026-11-02T11:00:00.000Z",
+          "source": "system"
+        },
+        "actor": {
+          "auth": "self-declared",
+          "id": "alice"
+        },
+        "policy": {
+          "id": "archive-policy",
+          "version": "7",
+          "hash": "sha256:c6726dae6b7fafe5dccaaee819b61cf10786eb86ad46716b6389cfe7f3d81dff",
+          "status": "approved",
+          "kind": "transfer-policy"
+        },
+        "payload": {
+          "action": "copy",
+          "source": "sftp://files.example/in/report.csv",
+          "target": "s3://archive/2026/report.csv",
+          "status": "failed",
+          "credentials": {
+            "user": "svc-transfer",
+            "password": "***"
+          },
+          "command_hash": "sha256:5f2b1b3d8a1c4b0e6b7d3f9a2c8e1d0f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d"
+        },
+        "redaction": {
+          "fields": [
+            "/credentials/password"
+          ],
+          "method": "mask"
+        },
+        "content_hash": "sha256:6fee82ef1695e68768318cf5d40120a3abc3482fb224ac619b2b4ab078813917",
+        "chain_hash": "sha256:0baf45421cc307904092465db7a047cd1f6476a2ac28c3c0d918d57cb63ef121"
+      },
+      "expected_payload_jcs": "{\"action\":\"copy\",\"command_hash\":\"sha256:5f2b1b3d8a1c4b0e6b7d3f9a2c8e1d0f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d\",\"credentials\":{\"password\":\"***\",\"user\":\"svc-transfer\"},\"source\":\"sftp://files.example/in/report.csv\",\"status\":\"failed\",\"target\":\"s3://archive/2026/report.csv\"}",
+      "expected_content_hash": "sha256:571249cf01772148d18c65ff7d8bddb213a5f832e4266123c5f692104ab2e36e",
+      "expected_core_jcs": "{\"actor\":{\"auth\":\"self-declared\",\"id\":\"alice\"},\"content_hash\":\"sha256:571249cf01772148d18c65ff7d8bddb213a5f832e4266123c5f692104ab2e36e\",\"event_type\":\"transfer.job.result\",\"policy\":{\"hash\":\"sha256:c6726dae6b7fafe5dccaaee819b61cf10786eb86ad46716b6389cfe7f3d81dff\",\"id\":\"archive-policy\",\"kind\":\"transfer-policy\",\"status\":\"approved\",\"version\":\"7\"},\"prev_hash\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"producer\":{\"id\":\"worker-01\",\"kind\":\"transfer-worker\",\"version\":\"0.1.0\"},\"schema\":\"trail.evidence/1\",\"seq\":0,\"stream_id\":\"worker-01\",\"time\":{\"recorded_at\":\"2026-11-02T11:00:00.000Z\",\"source\":\"system\"}}",
+      "expected_chain_hash": "sha256:e8a972c8e639afc721df345b90266e47de3e00dc1b49a46e80c385bcf92248f6",
+      "expected_valid": false,
+      "expected_error": "hash_mismatch"
+    }
+  ]
+}

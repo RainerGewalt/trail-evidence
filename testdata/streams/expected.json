@@ -1,0 +1,153 @@
+{
+  "note": "Each case names a JSON Lines fixture and the verdict a verifier must reach. findings lists the distinct (index, class) pairs in order of first occurrence; index counts non-empty lines from 0. pubkey paths are relative to this file.",
+  "cases": [
+    {
+      "file": "valid-chain.jsonl",
+      "description": "Three correctly chained records.",
+      "ok": true,
+      "records": 3,
+      "restarts": 0,
+      "findings": []
+    },
+    {
+      "file": "seq-gap.jsonl",
+      "description": "Third record skips seq 2 but is otherwise correctly linked.",
+      "ok": false,
+      "records": 3,
+      "restarts": 0,
+      "findings": [
+        {
+          "index": 2,
+          "class": "seq_gap"
+        }
+      ]
+    },
+    {
+      "file": "chain-break.jsonl",
+      "description": "Third record links to record 0 instead of record 1: a record was removed or reordered.",
+      "ok": false,
+      "records": 3,
+      "restarts": 0,
+      "findings": [
+        {
+          "index": 2,
+          "class": "chain_break"
+        }
+      ]
+    },
+    {
+      "file": "restart.jsonl",
+      "description": "A restart record anchored at the last chain_hash of the previous segment, followed by one chained record. Verifies OK with one restart notice.",
+      "ok": true,
+      "records": 4,
+      "restarts": 1,
+      "findings": [
+        {
+          "index": 2,
+          "class": "restart"
+        }
+      ]
+    },
+    {
+      "file": "restart-unknown-anchor.jsonl",
+      "description": "Previous segment present, restart anchored at genesis because the producer lost its state. Allowed, reported as a restart notice.",
+      "ok": true,
+      "records": 3,
+      "restarts": 1,
+      "findings": [
+        {
+          "index": 2,
+          "class": "restart"
+        }
+      ]
+    },
+    {
+      "file": "restart-bad-anchor.jsonl",
+      "description": "Restart anchored at record 0 although record 1 is the last of the previous segment: restart notice plus chain_break.",
+      "ok": false,
+      "records": 3,
+      "restarts": 1,
+      "findings": [
+        {
+          "index": 2,
+          "class": "restart"
+        },
+        {
+          "index": 2,
+          "class": "chain_break"
+        }
+      ]
+    },
+    {
+      "file": "tampered-payload.jsonl",
+      "description": "Payload of record 1 changed after sealing: hash_mismatch on record 1 (content and chain hash), while record 2 still links to the declared chain_hash.",
+      "ok": false,
+      "records": 3,
+      "restarts": 0,
+      "findings": [
+        {
+          "index": 1,
+          "class": "hash_mismatch"
+        }
+      ]
+    },
+    {
+      "file": "signed.jsonl",
+      "description": "Three records signed with the TEST KEY.",
+      "pubkey": "../keys/test-ed25519.pub",
+      "require_signatures": true,
+      "ok": true,
+      "records": 3,
+      "restarts": 0,
+      "findings": []
+    },
+    {
+      "file": "signature-invalid.jsonl",
+      "description": "Record 1 is signed by a different key (claiming the test key id), record 2 is unsigned. With the test public key and --require-signatures both are signature_invalid.",
+      "pubkey": "../keys/test-ed25519.pub",
+      "require_signatures": true,
+      "ok": false,
+      "records": 3,
+      "restarts": 0,
+      "findings": [
+        {
+          "index": 1,
+          "class": "signature_invalid"
+        },
+        {
+          "index": 2,
+          "class": "signature_invalid"
+        }
+      ]
+    },
+    {
+      "file": "schema-invalid.jsonl",
+      "description": "Record 1 has an unknown producer.kind (schema_invalid, but hashes and links still check out), record 3 is not JSON, record 4 has a string seq and misses most members.",
+      "ok": false,
+      "records": 5,
+      "restarts": 0,
+      "findings": [
+        {
+          "index": 1,
+          "class": "schema_invalid"
+        },
+        {
+          "index": 3,
+          "class": "schema_invalid"
+        },
+        {
+          "index": 4,
+          "class": "schema_invalid"
+        }
+      ]
+    },
+    {
+      "file": "multi-stream.jsonl",
+      "description": "Two independent streams interleaved in one journal; each chain is verified on its own.",
+      "ok": true,
+      "records": 4,
+      "restarts": 0,
+      "findings": []
+    }
+  ]
+}

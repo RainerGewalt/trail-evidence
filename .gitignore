@@ -1,0 +1,21 @@
+# build output
+/go/bin/
+/go/trail-evidence
+*.test
+*.out
+
+# python
+__pycache__/
+*.pyc
+*.egg-info/
+/python/build/
+/python/dist/
+.pytest_cache/
+
+# editors
+.idea/
+.vscode/
+*.swp
+
+# local scratch
+/tmp/

@@ -477,11 +477,11 @@ func buildExamples() []Journal {
 	}
 	b := []*evidence.Record{
 		bk(0, "2026-11-02T08:00:00.010Z", "mqtt.decision.allow", "d-0001", "sensor-gw-3", []string{"publisher"}, "plant/+/telemetry", "12",
-			`{"client_id":"sensor-gw-3","topic":"plant/line1/telemetry","action":"publish","qos":1,"payload_size":212,"payload_hash":"sha256:3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b","access_decision":"allow","reason_code":"mqtt.rule_match"}`),
+			`{"client_id":"sensor-gw-3","topic":"plant/line1/telemetry","action":"publish","qos":1,"payload_size":212,"payload_hash":"sha256:3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b","access_decision":"allow","reason_code":"mqtt.allowed"}`),
 		bk(1, "2026-11-02T08:00:00.350Z", "mqtt.decision.deny", "d-0002", "guest-app", []string{"guest"}, "plant/+/control", "12",
-			`{"client_id":"guest-app","topic":"plant/line1/control","action":"publish","qos":0,"payload_size":16,"payload_hash":"sha256:7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c","access_decision":"deny","reason_code":"mqtt.no_matching_grant"}`),
+			`{"client_id":"guest-app","topic":"plant/line1/control","action":"publish","qos":0,"payload_size":16,"payload_hash":"sha256:7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c","access_decision":"deny","reason_code":"mqtt.acl_role_not_in_topic_scope"}`),
 		bk(2, "2026-11-02T08:00:01.000Z", "mqtt.decision.allow", "d-0003", "hmi-line1", []string{"operator"}, "plant/+/control", "12",
-			`{"client_id":"hmi-line1","topic":"plant/line1/control","action":"subscribe","qos":1,"access_decision":"allow","reason_code":"mqtt.rule_match"}`),
+			`{"client_id":"hmi-line1","topic":"plant/line1/control","action":"subscribe","qos":1,"access_decision":"allow","reason_code":"mqtt.allowed"}`),
 	}
 	sealChain(b)
 	out = append(out, Journal{File: "broker-export.jsonl", Lines: lines(b...)})

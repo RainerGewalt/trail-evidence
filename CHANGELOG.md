@@ -23,9 +23,10 @@ tagged. Until then the record format is a draft and may change.
   `.github/workflows/self-test.yml` runs it from the checkout on Linux, macOS
   and Windows against the examples and fixtures.
 - Reason code catalog: `docs/REASON_CODES.md` and `schema/reason-codes.json`
-  with 36 codes for `payload.reason_code` in the namespaces `transfer`,
+  with 38 codes for `payload.reason_code` in the namespaces `transfer`,
   `mqtt`, `source`, `ml` and `common`, each with severity, meaning and
-  example; `schema/reason-codes.schema.json` and `scripts/reason_codes.py`
+  example. `mqtt.*` mirrors the authorization reasons of a reference broker
+  plus a generic `mqtt.allowed`; `schema/reason-codes.schema.json` and `scripts/reason_codes.py`
   check the catalog. Documentation only; verifiers do not check reason codes.
 - `SPEC.md` section 10, Conformance: producer and verifier conformance
   defined by `testdata/vectors.json` and `testdata/streams/expected.json`,
@@ -72,6 +73,6 @@ tagged. Until then the record format is a draft and may change.
 - `trail-evidence version` reports the release version set at build time,
   or the module version for `go install` builds, instead of a fixed string.
 - Python package version `0.1.0` (was `0.1.0.dev0`).
-- Example journals use catalog reason codes: `mqtt.rule_match`,
-  `mqtt.no_matching_grant`, and `transfer.source_not_found` on the failed
-  transfer job. Their hashes changed accordingly; the vectors did not.
+- Example journals use catalog reason codes: `mqtt.allowed`,
+  `mqtt.acl_role_not_in_topic_scope`, and `transfer.source_not_found` on the
+  failed transfer job. Their hashes changed accordingly; the vectors did not.

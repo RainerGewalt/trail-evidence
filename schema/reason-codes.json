@@ -3,7 +3,7 @@
   "name": "trail.evidence/1 reason codes",
   "version": "0.1.0",
   "status": "draft",
-  "description": "Shared vocabulary for payload.reason_code across the producer kinds of trail.evidence/1. Documentation only: verifiers do not check reason codes. docs/REASON_CODES.md is generated from this file by scripts/reason_codes.py.",
+  "description": "Shared vocabulary for payload.reason_code across the producer kinds of trail.evidence/1. The mqtt namespace mirrors the authorization reasons of a reference broker; other brokers may add their own mqtt codes. Documentation only: verifiers do not check reason codes. docs/REASON_CODES.md is generated from this file by scripts/reason_codes.py.",
   "severities": {
     "info": "The event happened as intended. Nothing to follow up.",
     "warning": "The operation was refused by design, or it completed in a degraded way. The evidence is complete; someone should look.",
@@ -20,7 +20,7 @@
       "producer_kinds": [
         "broker"
       ],
-      "description": "Broker access decisions, as written by an export adapter."
+      "description": "Broker access decisions, as written by an export adapter. The codes mirror the authorization reasons of a reference broker; other brokers may add their own codes in this namespace."
     },
     "source": {
       "producer_kinds": [
@@ -245,10 +245,10 @@
       "derived_from": "TrailTransfer rejection reason too_many_jobs"
     },
     {
-      "code": "mqtt.rule_match",
+      "code": "mqtt.allowed",
       "namespace": "mqtt",
       "severity": "info",
-      "meaning": "A topic rule grants this client the requested action on this topic; the broker allowed it.",
+      "meaning": "The broker allowed the action. Generic code for allow decisions; a producer MAY omit reason_code on an allow, and the reference broker sets none.",
       "producer_kinds": [
         "broker"
       ],
@@ -259,56 +259,16 @@
           "topic": "plant/line1/telemetry",
           "action": "publish",
           "access_decision": "allow",
-          "reason_code": "mqtt.rule_match"
+          "reason_code": "mqtt.allowed"
         }
       },
-      "derived_from": "examples/broker-export.jsonl (records 0, 2)"
+      "derived_from": "examples/broker-export.jsonl (records 0, 2); the reference broker leaves the reason of an allow empty"
     },
     {
-      "code": "mqtt.no_matching_grant",
+      "code": "mqtt.acl_unauthenticated",
       "namespace": "mqtt",
       "severity": "warning",
-      "meaning": "No topic rule grants this client the requested action on this topic; the broker denied it (default deny).",
-      "producer_kinds": [
-        "broker"
-      ],
-      "example": {
-        "event_type": "mqtt.decision.deny",
-        "payload": {
-          "client_id": "guest-app",
-          "topic": "plant/line1/control",
-          "action": "publish",
-          "access_decision": "deny",
-          "reason_code": "mqtt.no_matching_grant"
-        }
-      },
-      "derived_from": "examples/broker-export.jsonl (record 1)"
-    },
-    {
-      "code": "mqtt.explicit_deny",
-      "namespace": "mqtt",
-      "severity": "warning",
-      "meaning": "A topic rule explicitly denies this client the requested action; the broker denied it.",
-      "producer_kinds": [
-        "broker"
-      ],
-      "example": {
-        "event_type": "mqtt.decision.deny",
-        "payload": {
-          "client_id": "hmi-line2",
-          "topic": "plant/line1/control",
-          "action": "publish",
-          "access_decision": "deny",
-          "reason_code": "mqtt.explicit_deny"
-        }
-      },
-      "derived_from": "broker decision semantics (allow, deny by rule, default deny)"
-    },
-    {
-      "code": "mqtt.not_authenticated",
-      "namespace": "mqtt",
-      "severity": "warning",
-      "meaning": "The client had no authenticated identity and the requested action needs one; the broker denied it.",
+      "meaning": "The client had no authenticated session; the action was refused before any rule was consulted.",
       "producer_kinds": [
         "broker"
       ],
@@ -319,36 +279,125 @@
           "topic": "plant/line1/telemetry",
           "action": "subscribe",
           "access_decision": "deny",
-          "reason_code": "mqtt.not_authenticated"
+          "reason_code": "mqtt.acl_unauthenticated"
         }
       },
-      "derived_from": "actor.auth none (SPEC.md 3.3)"
+      "derived_from": "reference broker authorizer, reason acl_unauthenticated",
+      "related": [
+        "actor.auth"
+      ]
     },
     {
-      "code": "mqtt.policy_unavailable",
-      "namespace": "mqtt",
-      "severity": "error",
-      "meaning": "The broker could not evaluate its rules (store unreachable, rule set not loaded) and denied the action fail-closed.",
-      "producer_kinds": [
-        "broker"
-      ],
-      "example": {
-        "event_type": "mqtt.decision.deny",
-        "payload": {
-          "client_id": "sensor-gw-3",
-          "topic": "plant/line1/telemetry",
-          "action": "publish",
-          "access_decision": "deny",
-          "reason_code": "mqtt.policy_unavailable"
-        }
-      },
-      "derived_from": "broker decision semantics (fail-closed deny)"
-    },
-    {
-      "code": "mqtt.quota_exceeded",
+      "code": "mqtt.acl_anonymous_restricted_topic",
       "namespace": "mqtt",
       "severity": "warning",
-      "meaning": "The action was within the client's grants but exceeded a rate, size or connection limit; the broker denied it.",
+      "meaning": "The client used the anonymous identity and the topic lies outside the area open to anonymous clients.",
+      "producer_kinds": [
+        "broker"
+      ],
+      "example": {
+        "event_type": "mqtt.decision.deny",
+        "payload": {
+          "client_id": "kiosk-2",
+          "topic": "plant/line1/telemetry",
+          "action": "subscribe",
+          "access_decision": "deny",
+          "reason_code": "mqtt.acl_anonymous_restricted_topic"
+        }
+      },
+      "derived_from": "reference broker authorizer, reason acl_anonymous_restricted_topic"
+    },
+    {
+      "code": "mqtt.acl_insufficient_permissions",
+      "namespace": "mqtt",
+      "severity": "warning",
+      "meaning": "The identity holds no role the broker recognises, so no topic rule can apply to it.",
+      "producer_kinds": [
+        "broker"
+      ],
+      "example": {
+        "event_type": "mqtt.decision.deny",
+        "payload": {
+          "client_id": "svc-legacy",
+          "topic": "plant/line1/telemetry",
+          "action": "publish",
+          "access_decision": "deny",
+          "roles": [
+            "unknown-role"
+          ],
+          "reason_code": "mqtt.acl_insufficient_permissions"
+        }
+      },
+      "derived_from": "reference broker authorizer, reason acl_insufficient_permissions"
+    },
+    {
+      "code": "mqtt.acl_role_not_in_topic_scope",
+      "namespace": "mqtt",
+      "severity": "warning",
+      "meaning": "No topic rule brings this topic into scope for any role the identity holds (deny by default).",
+      "producer_kinds": [
+        "broker"
+      ],
+      "example": {
+        "event_type": "mqtt.decision.deny",
+        "payload": {
+          "client_id": "guest-app",
+          "topic": "plant/line1/control",
+          "action": "publish",
+          "access_decision": "deny",
+          "reason_code": "mqtt.acl_role_not_in_topic_scope"
+        }
+      },
+      "derived_from": "reference broker authorizer, reason acl_role_not_in_topic_scope; examples/broker-export.jsonl (record 1)"
+    },
+    {
+      "code": "mqtt.acl_role_action_not_permitted",
+      "namespace": "mqtt",
+      "severity": "warning",
+      "meaning": "A topic rule covers the topic for one of the identity's roles, but that role may not perform this operation (publish or subscribe).",
+      "producer_kinds": [
+        "broker"
+      ],
+      "example": {
+        "event_type": "mqtt.decision.deny",
+        "payload": {
+          "client_id": "hmi-line1",
+          "topic": "plant/line1/control",
+          "action": "publish",
+          "access_decision": "deny",
+          "reason_code": "mqtt.acl_role_action_not_permitted"
+        }
+      },
+      "derived_from": "reference broker authorizer, reason acl_role_action_not_permitted"
+    },
+    {
+      "code": "mqtt.acl_policy_denied",
+      "namespace": "mqtt",
+      "severity": "warning",
+      "meaning": "The action passed authentication and topic scope, and a further policy check that also considers the client id refused it.",
+      "producer_kinds": [
+        "broker"
+      ],
+      "example": {
+        "event_type": "mqtt.decision.deny",
+        "payload": {
+          "client_id": "sensor-gw-3",
+          "topic": "plant/line1/setpoints",
+          "action": "publish",
+          "access_decision": "deny",
+          "reason_code": "mqtt.acl_policy_denied"
+        }
+      },
+      "derived_from": "reference broker authorizer, reason acl_policy_denied",
+      "related": [
+        "policy"
+      ]
+    },
+    {
+      "code": "mqtt.authz_unknown_operation",
+      "namespace": "mqtt",
+      "severity": "error",
+      "meaning": "The authorization request named an operation the authorizer does not know (neither publish, subscribe nor delivery); it was refused.",
       "producer_kinds": [
         "broker"
       ],
@@ -357,13 +406,12 @@
         "payload": {
           "client_id": "sensor-gw-3",
           "topic": "plant/line1/telemetry",
-          "action": "publish",
-          "payload_size": 1048577,
+          "action": "retain-clear",
           "access_decision": "deny",
-          "reason_code": "mqtt.quota_exceeded"
+          "reason_code": "mqtt.authz_unknown_operation"
         }
       },
-      "derived_from": "broker decision semantics (limits)"
+      "derived_from": "reference broker authorizer, reason authz_unknown_operation"
     },
     {
       "code": "source.inventory_initial",

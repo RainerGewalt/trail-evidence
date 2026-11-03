@@ -6,6 +6,10 @@ Status: **draft**, catalog version 0.1.0. Machine-readable form:
 tables below are generated from the JSON by `scripts/reason_codes.py --write`;
 edit the JSON, not the tables.
 
+The `mqtt.*` namespace mirrors the authorization reasons of a reference
+broker, one code per reason, plus the generic `mqtt.allowed`. Other brokers
+may add their own codes in this namespace for reasons these do not cover.
+
 A record's `event_type` says what happened. `payload.reason_code` says why
 an outcome is what it is: why a job failed, why a broker denied a publish,
 why a value is unusable. When every producer uses the same codes, one query
@@ -21,6 +25,8 @@ mapping per producer.
 - The namespace follows the producer kind (`transfer`, `mqtt`, `source`,
   `ml`); `common` is for conditions every producer can hit: gaps, restarts,
   configuration changes, an unreliable clock.
+- Allowed broker decisions need no code. A producer may set `mqtt.allowed`
+  or leave `reason_code` out; denials should always carry one.
 - Free text belongs next to the code (`error`, `errors`, `detail`), not in
   it. Domain data stays in the payload as before.
 - A code keeps its meaning once it is in the catalog. New codes are added by
@@ -80,16 +86,18 @@ File transfer jobs (TrailTransfer): results and rejections. Producer kinds: `tra
 
 ### `mqtt.*`
 
-Broker access decisions, as written by an export adapter. Producer kinds: `broker`.
+Broker access decisions, as written by an export adapter. The codes mirror the authorization reasons of a reference broker; other brokers may add their own codes in this namespace. Producer kinds: `broker`.
 
 | Code | Severity | Meaning | Example |
 |---|---|---|---|
-| `mqtt.rule_match` | info | A topic rule grants this client the requested action on this topic; the broker allowed it. | `mqtt.decision.allow` with `{"client_id":"sensor-gw-3","topic":"plant/line1/telemetry","action":"publish","access_decision":"allow"}` |
-| `mqtt.no_matching_grant` | warning | No topic rule grants this client the requested action on this topic; the broker denied it (default deny). | `mqtt.decision.deny` with `{"client_id":"guest-app","topic":"plant/line1/control","action":"publish","access_decision":"deny"}` |
-| `mqtt.explicit_deny` | warning | A topic rule explicitly denies this client the requested action; the broker denied it. | `mqtt.decision.deny` with `{"client_id":"hmi-line2","topic":"plant/line1/control","action":"publish","access_decision":"deny"}` |
-| `mqtt.not_authenticated` | warning | The client had no authenticated identity and the requested action needs one; the broker denied it. | `mqtt.decision.deny` with `{"client_id":"anon-7f","topic":"plant/line1/telemetry","action":"subscribe","access_decision":"deny"}` |
-| `mqtt.policy_unavailable` | error | The broker could not evaluate its rules (store unreachable, rule set not loaded) and denied the action fail-closed. | `mqtt.decision.deny` with `{"client_id":"sensor-gw-3","topic":"plant/line1/telemetry","action":"publish","access_decision":"deny"}` |
-| `mqtt.quota_exceeded` | warning | The action was within the client's grants but exceeded a rate, size or connection limit; the broker denied it. | `mqtt.decision.deny` with `{"client_id":"sensor-gw-3","topic":"plant/line1/telemetry","action":"publish","payload_size":1048577,"access_decision":"deny"}` |
+| `mqtt.allowed` | info | The broker allowed the action. Generic code for allow decisions; a producer MAY omit reason_code on an allow, and the reference broker sets none. | `mqtt.decision.allow` with `{"client_id":"sensor-gw-3","topic":"plant/line1/telemetry","action":"publish","access_decision":"allow"}` |
+| `mqtt.acl_unauthenticated` | warning | The client had no authenticated session; the action was refused before any rule was consulted. | `mqtt.decision.deny` with `{"client_id":"anon-7f","topic":"plant/line1/telemetry","action":"subscribe","access_decision":"deny"}` |
+| `mqtt.acl_anonymous_restricted_topic` | warning | The client used the anonymous identity and the topic lies outside the area open to anonymous clients. | `mqtt.decision.deny` with `{"client_id":"kiosk-2","topic":"plant/line1/telemetry","action":"subscribe","access_decision":"deny"}` |
+| `mqtt.acl_insufficient_permissions` | warning | The identity holds no role the broker recognises, so no topic rule can apply to it. | `mqtt.decision.deny` with `{"client_id":"svc-legacy","topic":"plant/line1/telemetry","action":"publish","access_decision":"deny","roles":["unknown-role"]}` |
+| `mqtt.acl_role_not_in_topic_scope` | warning | No topic rule brings this topic into scope for any role the identity holds (deny by default). | `mqtt.decision.deny` with `{"client_id":"guest-app","topic":"plant/line1/control","action":"publish","access_decision":"deny"}` |
+| `mqtt.acl_role_action_not_permitted` | warning | A topic rule covers the topic for one of the identity's roles, but that role may not perform this operation (publish or subscribe). | `mqtt.decision.deny` with `{"client_id":"hmi-line1","topic":"plant/line1/control","action":"publish","access_decision":"deny"}` |
+| `mqtt.acl_policy_denied` | warning | The action passed authentication and topic scope, and a further policy check that also considers the client id refused it. | `mqtt.decision.deny` with `{"client_id":"sensor-gw-3","topic":"plant/line1/setpoints","action":"publish","access_decision":"deny"}` |
+| `mqtt.authz_unknown_operation` | error | The authorization request named an operation the authorizer does not know (neither publish, subscribe nor delivery); it was refused. | `mqtt.decision.deny` with `{"client_id":"sensor-gw-3","topic":"plant/line1/telemetry","action":"retain-clear","access_decision":"deny"}` |
 
 ### `source.*`
 
@@ -132,7 +140,7 @@ Conditions every producer can hit: gaps, restarts, configuration changes, clock 
 | `common.time_uncertain` | warning | The producer cannot vouch for its clock (no NTP sync, time reconstructed from seq); recorded_at may be off. Records written meanwhile carry time.source unknown or seq-reconstructed. | `source.clock.changed` with `{"time_source":"unknown","last_sync":"2026-11-01T22:00:00.000Z"}` |
 | `common.clock_step` | warning | The wall clock jumped forwards or backwards by more than the producer's tolerance; recorded_at values around the step are not monotonic. | `transfer.clock.stepped` with `{"step_ms":-3500,"time_source":"ntp"}` |
 
-36 codes: 8 info, 16 warning, 12 error.
+38 codes: 8 info, 18 warning, 12 error.
 
 <!-- END GENERATED -->
 
@@ -141,10 +149,12 @@ Conditions every producer can hit: gaps, restarts, configuration changes, clock 
 `transfer.*` follows the job statuses and rejection reasons of TrailTransfer
 (`completed`, `failed`, `cancelled`; `schema_violation`, `policy_violation`,
 `duplicate_job_id`, `too_many_jobs`) and the failed job in
-`examples/transfer-worker.jsonl`. `mqtt.rule_match` and
-`mqtt.no_matching_grant` are the codes in `examples/broker-export.jsonl`; the
-other `mqtt.*` codes cover the remaining ways a broker reaches a decision
-(explicit deny, no identity, rules unavailable, limits). `source.*` and
+`examples/transfer-worker.jsonl`. `mqtt.*` takes the reason strings of a
+reference broker's authorizer unchanged, with the `mqtt.` prefix added
+(`acl_role_not_in_topic_scope` becomes `mqtt.acl_role_not_in_topic_scope`);
+that authorizer gives an allow no reason, hence the generic `mqtt.allowed`.
+`examples/broker-export.jsonl` uses `mqtt.allowed` and
+`mqtt.acl_role_not_in_topic_scope`. `source.*` and
 `ml.*` follow the members of the example journals (`quality`,
 `inventory_hash`, `decision.threshold`, `data_fingerprint`). `common.*`
 mirrors the record members and finding classes in `SPEC.md` that describe

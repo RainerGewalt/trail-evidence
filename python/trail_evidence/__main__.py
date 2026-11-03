@@ -28,10 +28,10 @@ def cmd_verify(args: argparse.Namespace) -> int:
         return 2
     try:
         if args.file == "-":
-            report = rec.verify_stream(sys.stdin, pub, args.require_signatures, args.strict)
+            report = rec.verify_stream(sys.stdin, pub, args.require_signatures, args.allow_incomplete, args.require_known_profiles)
         else:
             with open(args.file, "r", encoding="utf-8") as fh:
-                report = rec.verify_stream(fh, pub, args.require_signatures, args.strict)
+                report = rec.verify_stream(fh, pub, args.require_signatures, args.allow_incomplete, args.require_known_profiles)
     except OSError as exc:
         print(exc, file=sys.stderr)
         return 2
@@ -43,7 +43,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
             seq = "-" if f.seq is None else str(f.seq)
             sid = f.stream_id or ""
             print(f'  {f.severity:<7} {f.cls:<17} record #{f.index} (line {f.line}, stream "{sid}", seq {seq}): {f.message}')
-    return 0 if report.ok else 1
+    return report.exit_code()
 
 
 def cmd_hash(args: argparse.Namespace) -> int:
@@ -139,14 +139,18 @@ def cmd_profiles(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="python -m trail_evidence",
-                                description="Trail Evidence Record v1 tools (Python reference implementation)")
+                                description="Trail Evidence Record v1 tools (Python reference implementation). "
+                                            "verify exits 0 for valid (or incomplete with --allow-incomplete), "
+                                            "1 for invalid, 2 for usage or I/O errors, 3 for incomplete.")
     sub = p.add_subparsers(dest="command", required=True)
     v = sub.add_parser("verify", help="verify a JSON Lines journal")
     v.add_argument("file", help="journal path, or - for stdin")
     v.add_argument("--pubkey", help="Ed25519 public key as 64 hex characters or a file (hex or PEM)")
     v.add_argument("--require-signatures", action="store_true", help="treat unsigned records as signature_invalid")
-    v.add_argument("--strict", action="store_true",
-                   help="also fail on unknown and outside_scope records and on profiles this verifier does not know")
+    v.add_argument("--allow-incomplete", action="store_true",
+                   help="accept the verdict incomplete (unknown or outside_scope records), for journals known to be incomplete")
+    v.add_argument("--require-known-profiles", action="store_true",
+                   help="count records with a profile this verifier does not know as incomplete")
     v.add_argument("--json", action="store_true", help="print the full report as JSON")
     v.set_defaults(func=cmd_verify)
     h = sub.add_parser("hash", help="recompute the hashes of one record")

@@ -66,8 +66,8 @@ CHAIN_BREAK = "chain_break"
 SEQ_MISMATCH = "seq_mismatch"
 SIGNATURE_INVALID = "signature_invalid"
 PROFILE_INVALID = "profile_invalid"
-# Notices. seq_gap makes a record unknown; with strict verification seq_gap,
-# outside_scope and profile_unknown are reported as errors.
+# Notices. seq_gap makes a record unknown; seq_gap and outside_scope make
+# the journal incomplete, profile_unknown only with require_known_profiles.
 SEQ_GAP = "seq_gap"
 OUTSIDE_SCOPE = "outside_scope"
 PROFILE_UNKNOWN = "profile_unknown"
@@ -78,7 +78,15 @@ NUMBER_PRECISION = "number_precision"
 
 ERROR_CLASSES = (SCHEMA_INVALID, HASH_MISMATCH, CHAIN_BREAK, SEQ_MISMATCH, SIGNATURE_INVALID, PROFILE_INVALID)
 NOTICE_CLASSES = (SEQ_GAP, OUTSIDE_SCOPE, PROFILE_UNKNOWN, RESTART, AFTER_UNKNOWN, LEGACY_INTEGER_SEQ, NUMBER_PRECISION)
-STRICT_CLASSES = (SEQ_GAP, OUTSIDE_SCOPE, PROFILE_UNKNOWN)
+
+# Journal verdicts (SPEC.md section 6.4) and exit codes of the verify command.
+VERDICT_VALID = "valid"
+VERDICT_INVALID = "invalid"
+VERDICT_INCOMPLETE = "incomplete"
+EXIT_VALID = 0       # valid, or incomplete and allowed
+EXIT_INVALID = 1
+EXIT_USAGE = 2
+EXIT_INCOMPLETE = 3
 
 # Record states and profile states (SPEC.md section 6.1).
 VALID = "valid"
@@ -169,8 +177,13 @@ class RecordResult:
 
 @dataclass
 class Report:
+    """The outcome of verify_stream. verdict describes the journal; ok says
+    whether it passes under the options it was verified with."""
+
     ok: bool = True
-    strict: bool = False
+    verdict: str = VERDICT_VALID
+    allow_incomplete: bool = False
+    require_known_profiles: bool = False
     records: int = 0
     errors: int = 0
     restarts: int = 0
@@ -186,30 +199,46 @@ class Report:
 
     def add(self, *findings: Finding) -> None:
         for f in findings:
-            if self.strict and f.cls in STRICT_CLASSES:
-                f.severity = ERROR
             self.findings.append(f)
             if f.severity == ERROR:
                 self.errors += 1
-                self.ok = False
             else:
                 self.notices += 1
             if f.cls == RESTART:
                 self.restarts += 1
 
+    def finish(self) -> None:
+        """Compute verdict and ok from the record states (SPEC.md section 6.4)."""
+        unknown_profiles = self.require_known_profiles and self.profile_states[OUTSIDE] > 0
+        if self.states[INVALID]:
+            self.verdict = VERDICT_INVALID
+        elif self.states[UNKNOWN] or self.states[OUTSIDE] or unknown_profiles:
+            self.verdict = VERDICT_INCOMPLETE
+        else:
+            self.verdict = VERDICT_VALID
+        self.ok = self.verdict == VERDICT_VALID or (
+            self.verdict == VERDICT_INCOMPLETE and self.allow_incomplete and not unknown_profiles)
+
+    def exit_code(self) -> int:
+        if self.ok:
+            return EXIT_VALID
+        return EXIT_INVALID if self.verdict == VERDICT_INVALID else EXIT_INCOMPLETE
+
     def summary(self) -> str:
-        head = ("OK" if self.ok else "FAIL") + (" (strict)" if self.strict else "")
+        head = self.verdict.upper() + (" (allowed)" if self.verdict == VERDICT_INCOMPLETE and self.ok else "")
         s = f"{head}: {self.records} record(s) in {len(self.streams)} stream(s)"
-        if self.ok and not self.states[UNKNOWN]:
-            s += ", hash chain intact"
-        elif self.ok:
+        if self.verdict == VERDICT_INVALID:
+            s += f", {self.errors} error(s)"
+        elif self.states[UNKNOWN]:
             s += ", no invalid record"
         else:
-            s += f", {self.errors} error(s)"
+            s += ", hash chain intact"
         if self.states[UNKNOWN]:
             s += f", {self.states[UNKNOWN]} unknown"
         if self.states[OUTSIDE]:
             s += f", {self.states[OUTSIDE]} outside scope"
+        if self.profile_states[OUTSIDE]:
+            s += f", {self.profile_states[OUTSIDE]} with unknown profile"
         if self.restarts:
             s += f", {self.restarts} restart(s)"
         if self.signed_records:
@@ -221,7 +250,9 @@ class Report:
     def to_dict(self) -> dict:
         return {
             "ok": self.ok,
-            "strict": self.strict,
+            "verdict": self.verdict,
+            "allow_incomplete": self.allow_incomplete,
+            "require_known_profiles": self.require_known_profiles,
             "records": self.records,
             "errors": self.errors,
             "restarts": self.restarts,
@@ -873,16 +904,20 @@ def _check_signature(report: Report, record: dict, public_key: Optional[bytes], 
 def verify_stream(lines: Union[TextIO, Iterable[Union[str, bytes]]],
                   public_key: Optional[bytes] = None,
                   require_signatures: bool = False,
-                  strict: bool = False) -> Report:
+                  allow_incomplete: bool = False,
+                  require_known_profiles: bool = False) -> Report:
     """Verify a JSON Lines journal (file object or iterable of lines).
 
     Blank lines are skipped. Verification continues after an error so that
     the report lists every problem; chain state advances with the record's
     declared chain_hash. Every record gets a state (valid, invalid, unknown,
-    outside_scope) and a profile state. With ``strict`` the journal verifies
-    only when every record is valid and every profile was checked.
+    outside_scope) and a profile state; the journal gets the verdict valid,
+    invalid or incomplete. ``allow_incomplete`` accepts incomplete (for
+    journals known to be incomplete, such as rotated logs);
+    ``require_known_profiles`` counts records with an unknown profile as
+    incomplete, which allow_incomplete does not accept.
     """
-    report = Report(strict=strict)
+    report = Report(allow_incomplete=allow_incomplete, require_known_profiles=require_known_profiles)
     streams: dict = {}
     index = -1
     for line_no, raw in enumerate(lines, start=1):
@@ -920,4 +955,5 @@ def verify_stream(lines: Union[TextIO, Iterable[Union[str, bytes]]],
         report.states[res.state] += 1
         report.profile_states[res.profile_state] += 1
     report.streams = [streams[k] for k in sorted(streams)]
+    report.finish()
     return report

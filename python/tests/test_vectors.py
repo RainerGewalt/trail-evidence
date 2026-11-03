@@ -84,16 +84,19 @@ class StreamFixtures(unittest.TestCase):
             index = json.load(fh)
         self.assertTrue(index["cases"])
         for case in index["cases"]:
-            strict = case.get("strict", False)
-            with self.subTest(case["file"], strict=strict):
+            allow = case.get("allow_incomplete", False)
+            known = case.get("require_known_profiles", False)
+            with self.subTest(case["file"], allow_incomplete=allow, require_known_profiles=known):
                 pub = None
                 if case.get("pubkey"):
                     pub = parse_public_key(os.path.join(directory, case["pubkey"]))
                 with open(os.path.join(directory, case["file"]), "r", encoding="utf-8") as fh:
-                    report = verify_stream(fh, pub, case.get("require_signatures", False), strict)
+                    report = verify_stream(fh, pub, case.get("require_signatures", False), allow, known)
                 self.assertEqual(report.ok, case["ok"], report.summary())
-                self.assertEqual(report.ok, report.errors == 0)
-                self.assertEqual(report.strict, strict)
+                self.assertEqual(report.verdict, case["verdict"])
+                self.assertEqual(report.exit_code(), case["exit_code"])
+                self.assertEqual(report.verdict == rec.VERDICT_INVALID, report.errors > 0)
+                self.assertEqual((report.allow_incomplete, report.require_known_profiles), (allow, known))
                 self.assertEqual(report.records, case["records"])
                 self.assertEqual(report.restarts, case["restarts"])
                 got = []
@@ -280,8 +283,9 @@ class Profiles(unittest.TestCase):
                     continue
                 found += 1
                 with open(os.path.join(d, f), "r", encoding="utf-8") as fh:
-                    report = verify_stream(fh, strict=True)
+                    report = verify_stream(fh, require_known_profiles=True)
                 self.assertTrue(report.ok, report.summary())
+                self.assertEqual(report.verdict, rec.VERDICT_VALID)
                 self.assertEqual(report.states[rec.VALID], report.records)
                 self.assertEqual(report.profile_states[rec.VALID], report.records)
         self.assertGreater(found, 0)
@@ -296,15 +300,30 @@ class Profiles(unittest.TestCase):
 class Summary(unittest.TestCase):
     def test_lines(self):
         cases = [
-            ("valid-chain.jsonl", False, "OK: 3 record(s) in 1 stream(s), hash chain intact"),
-            ("seq-gap.jsonl", False, "OK: 4 record(s) in 1 stream(s), no invalid record, 1 unknown"),
-            ("seq-gap.jsonl", True, "FAIL (strict): 4 record(s) in 1 stream(s), 1 error(s), 1 unknown"),
-            ("outside-scope.jsonl", False, "OK: 4 record(s) in 1 stream(s), hash chain intact, 2 outside scope"),
-            ("seq-mismatch.jsonl", False, "FAIL: 3 record(s) in 1 stream(s), 1 error(s)"),
+            ("valid-chain.jsonl", {}, "VALID: 3 record(s) in 1 stream(s), hash chain intact"),
+            ("seq-gap.jsonl", {}, "INCOMPLETE: 4 record(s) in 1 stream(s), no invalid record, 1 unknown"),
+            ("seq-gap.jsonl", {"allow_incomplete": True}, "INCOMPLETE (allowed): 4 record(s) in 1 stream(s), no invalid record, 1 unknown"),
+            ("outside-scope.jsonl", {}, "INCOMPLETE: 4 record(s) in 1 stream(s), hash chain intact, 2 outside scope"),
+            ("seq-mismatch.jsonl", {}, "INVALID: 3 record(s) in 1 stream(s), 1 error(s)"),
+            ("profile-unknown.jsonl", {}, "VALID: 3 record(s) in 1 stream(s), hash chain intact, 2 with unknown profile"),
+            ("profile-unknown.jsonl", {"require_known_profiles": True}, "INCOMPLETE: 3 record(s) in 1 stream(s), hash chain intact, 2 with unknown profile"),
         ]
-        for name, strict, want in cases:
+        for name, opts, want in cases:
             with open(os.path.join(STREAMS, name), "r", encoding="utf-8") as fh:
-                self.assertEqual(verify_stream(fh, strict=strict).summary(), want)
+                self.assertEqual(verify_stream(fh, **opts).summary(), want)
+
+    def test_cli_exit_codes(self):
+        from trail_evidence.__main__ import main
+        import contextlib
+        import io
+        for args, want in (
+            (["valid-chain.jsonl"], 0), (["seq-mismatch.jsonl"], 1), (["seq-gap.jsonl"], 3),
+            (["seq-gap.jsonl", "--allow-incomplete"], 0), (["profile-unknown.jsonl"], 0),
+            (["profile-unknown.jsonl", "--require-known-profiles", "--allow-incomplete"], 3),
+        ):
+            with self.subTest(args):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(main(["verify", os.path.join(STREAMS, args[0])] + args[1:]), want)
 
 
 if __name__ == "__main__":

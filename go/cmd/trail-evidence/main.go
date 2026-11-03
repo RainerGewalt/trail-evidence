@@ -14,13 +14,27 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime/debug"
 	"strings"
 
 	"github.com/RainerGewalt/trail-evidence/go/evidence"
 	"github.com/RainerGewalt/trail-evidence/go/internal/vectors"
 )
 
-const version = "0.1.0-draft"
+// version is set by the release build (-ldflags "-X main.version=..."). A
+// binary installed with `go install ...@<version>` reports the module version
+// from its build info instead; a plain `go build` reports "dev".
+var version = "dev"
+
+func versionString() string {
+	if version != "dev" {
+		return version
+	}
+	if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+		return bi.Main.Version
+	}
+	return version
+}
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -44,7 +58,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	case "version", "--version":
-		fmt.Fprintf(stdout, "trail-evidence %s (schema %s)\n", version, evidence.Schema)
+		fmt.Fprintf(stdout, "trail-evidence %s (schema %s)\n", versionString(), evidence.Schema)
 		return 0
 	case "help", "-h", "--help":
 		usage(stdout)

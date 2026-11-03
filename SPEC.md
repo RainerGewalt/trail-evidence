@@ -251,6 +251,7 @@ contains, per vector, the record and the expected payload JCS,
 reproduce these values byte for byte. `testdata/streams/` holds journals
 with the findings a verifier MUST report. The signing key in
 `testdata/keys/` is a published test key (RFC 8032 test vector 1).
+Section 10 turns these files into the conformance criterion.
 
 ## 8. Mapping notes (informative)
 
@@ -282,3 +283,52 @@ with the findings a verifier MUST report. The signing key in
 `schema` carries name and major version. Within `trail.evidence/1`, new
 optional members MAY be added; existing members, enumerations, hashing and
 chaining rules MUST NOT change. Anything else is `trail.evidence/2`.
+
+## 10. Conformance
+
+The test data in this repository is the conformance suite for
+`trail.evidence/1`. Conformance is defined by these files, not by a
+description of the algorithm.
+
+**Producer conformance.** An implementation that seals records conforms
+when, for every vector in `testdata/vectors.json`, it computes
+`expected_payload_jcs`, `expected_content_hash`, `expected_core_jcs` and
+`expected_chain_hash` byte for byte from the vector's `record`.
+
+**Verifier conformance.** An implementation that verifies records conforms
+when it meets producer conformance and in addition
+
+1. for every vector, reports the notice classes in `expected_notices` for
+   the record on its own, no error for vectors with `expected_valid: true`,
+   and the class `expected_error` for vectors with `expected_valid: false`;
+2. for every case in `testdata/streams/expected.json`, given the case's
+   `pubkey` and `require_signatures`, reaches exactly the listed `ok`,
+   `records` and `restarts`, and reports exactly the listed distinct
+   (`index`, `class`) pairs in the listed order of first occurrence. Reporting
+   the same pair more than once is allowed (one `hash_mismatch` each for
+   `content_hash` and `chain_hash`); an additional or missing pair is not.
+
+Two cases are named here because implementations most often get them wrong,
+and both are mandatory. They are part of the vector `jcs-edge-cases`:
+
+- **Integers beyond 2^53.** The payload literal `9007199254740993`
+  (2^53 + 1) canonicalises to `9007199254740992`, and a verifier reports
+  `number_precision` for the record (4.3, 6.1). An implementation that keeps
+  the exact integer produces a different `content_hash`; one that rejects
+  the record fails the vector.
+- **Member order.** Members are sorted by UTF-16 code units, not by code
+  points or UTF-8 bytes: `"🚀"` (U+1F680, surrogates D83D DE80) sorts before
+  `"！"` (U+FF01), and `"Z"` before `"a"`, `"ä"` and `"€"`.
+
+A claim of conformance names the suite revision it was tested against: a
+release tag or a commit of this repository. New vectors and fixtures within
+`trail.evidence/1` only add cases (section 9); an implementation that was
+conformant stays conformant for every case that existed at its revision.
+
+`scripts/conformance.sh <command>` runs a verifier against the suite and
+reports each vector and fixture. It is informative: it expects the command
+to offer `hash <record.json>` and `verify <journal.jsonl> [--pubkey <file>]
+[--require-signatures] --json` with the output members of the reference
+CLI (see README.md). The criterion is the data above, not the script; an
+implementation without a CLI can check the same files in its own tests, as
+the Go, Python and JavaScript implementations here do.

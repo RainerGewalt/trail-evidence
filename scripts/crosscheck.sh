@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Cross-check: the Go reference implementation generates the vectors, Python
 # and the browser verifier (web/verify.js, run with Node) must reproduce every
-# hash byte for byte, all three verifiers must agree on every stream fixture
-# and example journal, and each must pass scripts/conformance.sh.
+# hash byte for byte, all three verifiers must produce identical reports
+# (verdict, counts, streams, the state and profile state of every record, and
+# every finding; only the wording of messages may differ) on every stream
+# fixture, example and profile journal, with and without keys and strict
+# mode, and each must pass scripts/conformance.sh.
 #
 # Usage: scripts/crosscheck.sh            (picks the newest python3 >= 3.9)
 #        PYTHON=python3.12 NODE=node scripts/crosscheck.sh
@@ -34,6 +37,9 @@ echo "go:     $(go version)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
+echo "== 0. The profile registry and its copies agree (scripts/profiles.py)"
+"$PY" scripts/profiles.py --check
+
 echo "== 1. Go generates the vectors"
 (cd go && go run ./cmd/trail-evidence vectors) > "$TMP/vectors.go.json"
 if ! cmp -s "$TMP/vectors.go.json" testdata/vectors.json; then
@@ -54,30 +60,36 @@ for copy in transfer-worker.jsonl tampered/hash-mismatch.jsonl; do
   fi
 done
 
-echo "== 4. All verifiers agree on fixtures and examples"
+echo "== 4. All verifiers produce identical reports on fixtures, examples and profile journals"
 GOBIN="$TMP/trail-evidence"
 (cd go && go build -o "$GOBIN" ./cmd/trail-evidence)
 PUB=testdata/keys/test-ed25519.pub
 mismatch=0
-for f in examples/*.jsonl examples/tampered/*.jsonl testdata/streams/*.jsonl; do
-  for mode in plain signed; do
-    if [ "$mode" = signed ]; then flags=(--pubkey "$PUB" --require-signatures); else flags=(); fi
+for f in examples/*.jsonl examples/tampered/*.jsonl testdata/streams/*.jsonl profiles/*/*.journal.jsonl; do
+  for mode in plain signed strict; do
+    case "$mode" in
+      signed) flags=(--pubkey "$PUB" --require-signatures) ;;
+      strict) flags=(--strict) ;;
+      *)      flags=() ;;
+    esac
     set +e
     "$GOBIN" verify "$f" "${flags[@]}" --json > "$TMP/go.json"; gorc=$?
     PYTHONPATH=python "$PY" -m trail_evidence verify "$f" "${flags[@]}" --json > "$TMP/py.json"; pyrc=$?
     "$NODE" web/test/run.mjs report "$f" "${flags[@]}" > "$TMP/js.json"; jsrc=$?
     set -e
-    # Compare verdict and the ordered list of (index, class, severity); messages may differ in wording.
+    # Compare the whole report except the wording of messages.
     "$PY" - "$TMP/go.json" "$gorc" "$f" "$mode" python "$TMP/py.json" "$pyrc" javascript "$TMP/js.json" "$jsrc" <<'PYEOF' || mismatch=1
 import json, sys
 g = json.load(open(sys.argv[1])); gorc = sys.argv[2]
 f, mode = sys.argv[3], sys.argv[4]
 def shape(r):
     return {
-        "ok": r["ok"], "records": r["records"], "errors": r["errors"], "restarts": r["restarts"],
+        "ok": r["ok"], "strict": r["strict"], "records": r["records"], "errors": r["errors"], "restarts": r["restarts"],
         "notices": r["notices"], "signed": r["signed_records"], "verified": r["signatures_verified"], "unsigned": r["unsigned_records"],
-        "streams": [(s["stream_id"], s["records"], s["last_seq"], s["last_chain_hash"], s["restarts"]) for s in r["streams"]],
-        "findings": [(x["index"], x["class"], x["severity"]) for x in r["findings"]],
+        "states": r["states"], "profile_states": r["profile_states"],
+        "streams": r["streams"],
+        "results": r["results"],
+        "findings": [{k: v for k, v in x.items() if k != "message"} for x in r["findings"]],
     }
 sg = shape(g)
 bad = False

@@ -14,10 +14,17 @@ records comes from a real deployment.
 The `reason_code` values come from the catalog in
 [`docs/REASON_CODES.md`](../docs/REASON_CODES.md).
 
-[`tampered/`](tampered/README.md) holds four manipulated copies of
-`transfer-worker.jsonl`, one per error class (`hash_mismatch`,
-`chain_break`, `seq_gap`, `signature_invalid`), with the findings a verifier
-must report.
+Every record writes `seq` as a decimal string (`"seq":"2"`), as format 0.2
+requires.
+
+[`tampered/`](tampered/README.md) holds manipulated copies of
+`transfer-worker.jsonl`: one per error class (`hash_mismatch`,
+`chain_break`, `seq_mismatch`, `signature_invalid`) and two that leave a
+record `unknown` (`seq_gap`, `outside_scope`), with the findings and record
+states a verifier must report.
+
+A journal with a profile is in the profile registry:
+[`../profiles/example.measurement/1.journal.jsonl`](../profiles/README.md).
 
 Verify any of them:
 

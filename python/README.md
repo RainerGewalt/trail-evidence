@@ -1,9 +1,11 @@
 # trail-evidence (Python)
 
-Reference implementation of the Trail Evidence Record v1 contract in Python:
-seal, sign and verify hash-chained JSON evidence records. Standard library
-only (RFC 8785 canonicalisation and Ed25519 verification are implemented in
-the package), Python 3.9 or newer.
+Reference implementation of the Trail Evidence Record contract
+(`trail.evidence/1`, format 0.2) in Python: seal, sign and verify
+hash-chained JSON evidence records, and check payloads against registered
+profiles. Standard library only (RFC 8785 canonicalisation and Ed25519
+verification are implemented in the package, the profile registry ships as
+package data), Python 3.9 or newer.
 
 A Trail Evidence Record is one JSON object that describes one event a system
 wants to be able to prove later, chained to the previous record by a hash and
@@ -15,19 +17,25 @@ pip install trail-evidence
 
 trail-evidence-py verify journal.jsonl
 trail-evidence-py verify journal.jsonl --pubkey <64 hex chars or file> --require-signatures
+trail-evidence-py verify journal.jsonl --strict
 trail-evidence-py verify journal.jsonl --json
 trail-evidence-py hash record.json
+trail-evidence-py profiles
 ```
 
-Exit codes: 0 verified, 1 findings with severity error, 2 usage or I/O
-error. `python -m trail_evidence` is the same CLI.
+Every record gets a state: `valid`, `invalid`, `unknown` (its predecessor is
+not in the file) or `outside_scope` (another format or major version), and a
+profile state. A journal verifies when no record is `invalid`; `--strict`
+also fails on `unknown` and `outside_scope` records and on profiles the
+verifier does not know. Exit codes: 0 verified, 1 findings with severity
+error, 2 usage or I/O error. `python -m trail_evidence` is the same CLI.
 
 ```python
 from trail_evidence import seal, sign, verify_stream, GENESIS_HASH, NO_POLICY
 
 record = {
     "producer": {"kind": "ml-pipeline", "id": "run-7f3a", "version": "1.4.0"},
-    "stream_id": "run-7f3a", "seq": 0, "event_type": "ml.run.completed",
+    "stream_id": "run-7f3a", "seq": "0", "event_type": "ml.run.completed",
     "time": {"recorded_at": "2026-11-02T09:42:10.000Z", "source": "system"},
     "actor": {"auth": "operator-token", "id": "ml-ops"},
     "policy": NO_POLICY,
@@ -36,9 +44,13 @@ record = {
 seal(record, GENESIS_HASH)
 sign(record, seed_bytes)            # optional
 with open("journal.jsonl") as fh:
-    report = verify_stream(fh, public_key_bytes)
+    report = verify_stream(fh, public_key_bytes, strict=True)
 print(report.summary())
+print([(r.index, r.state, r.profile_state) for r in report.results])
 ```
+
+`seq` is a decimal string (`"0"` to `"18446744073709551615"`); `seal()`
+also accepts an int and writes the string.
 
 The pure Python Ed25519 code is written for clarity and test use, not for
 throughput or side-channel resistance. Producers that sign at volume should
@@ -47,8 +59,9 @@ verification in tooling and tests.
 
 The Go reference implementation, the browser verifier, the specification
 (`SPEC.md`), the JSON Schema and the test vectors live in the repository:
-<https://github.com/RainerGewalt/trail-evidence>. Go and Python reproduce
-each other's hashes byte for byte; `scripts/crosscheck.sh` enforces that.
+<https://github.com/RainerGewalt/trail-evidence>. Go, Python and the
+browser verifier produce identical reports; `scripts/crosscheck.sh`
+enforces that.
 
 Development, from a checkout:
 

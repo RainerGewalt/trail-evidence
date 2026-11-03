@@ -60,6 +60,11 @@ Two pairs look alike and mean different things:
   `restart`. `common.state_lost` is the case where `anchor_hash` is the
   genesis hash because the producer lost its previous state.
 
+Finding classes such as `seq_gap`, `seq_mismatch`, `outside_scope`,
+`profile_unknown`, `after_unknown` and `legacy_integer_seq` are what a
+verifier reports about a journal (`SPEC.md` section 6.2). They are not reason
+codes and are not in this catalog: no producer writes them into a record.
+
 ## Catalog
 
 The examples show `event_type` and the payload without `reason_code`. Hash

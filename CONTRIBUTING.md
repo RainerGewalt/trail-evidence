@@ -10,9 +10,15 @@ come with a few rules.
   with the text, the text wins and the code is fixed, unless the change is
   to the spec itself.
 - Go, Python and the browser verifier (`web/verify.js`) must stay
-  byte-identical on every vector. Any change to hashing, canonicalisation
-  or the core member set needs all three implementations, regenerated
-  vectors, and a passing `scripts/crosscheck.sh`.
+  byte-identical on every vector and produce identical reports (states,
+  findings, counts) on every journal. Any change to hashing,
+  canonicalisation, the core member set or the verification algorithm needs
+  all three implementations, regenerated vectors, and a passing
+  `scripts/crosscheck.sh`.
+- Profiles live in `profiles/` (see `profiles/README.md`). After changing a
+  schema there, run `scripts/profiles.py --write`; never edit the copies in
+  `go/evidence/profiles/`, `python/trail_evidence/profiles/` or
+  `web/profiles.js`.
 - Within `trail.evidence/1`, only additive changes are allowed: new
   optional members, new enumeration values with a documented meaning. Never
   change what is hashed. Anything else is a new major version.
@@ -31,13 +37,14 @@ come with a few rules.
    cd python && python3 -m unittest discover -s tests && cd ..
    node web/test/run.mjs
    scripts/crosscheck.sh            # includes scripts/conformance.sh for all three
-   scripts/validate_schema.py --vectors testdata/vectors.json examples/*.jsonl examples/tampered/*.jsonl
+   scripts/validate_schema.py --vectors testdata/vectors.json examples/*.jsonl examples/tampered/*.jsonl profiles/*/*.journal.jsonl
+   scripts/profiles.py --check
    scripts/reason_codes.py --check
    ```
 5. Commit with a conventional subject: `type(scope): subject`, for example
    `fix(python): reject padded base64url signatures`. Scopes in use: `spec`,
-   `schema`, `go`, `python`, `web`, `vectors`, `examples`, `action`, `ci`,
-   `release`, `docs`.
+   `schema`, `go`, `python`, `web`, `vectors`, `examples`, `profiles`,
+   `action`, `ci`, `release`, `docs`.
 
 New reason codes go into `schema/reason-codes.json`; run
 `scripts/reason_codes.py --write` to regenerate the tables in
@@ -47,7 +54,8 @@ New reason codes go into `schema/reason-codes.json`; run
 
 - Go 1.22 or newer.
 - Python 3.9 or newer; the package has no runtime dependencies. The
-  `jsonschema` package is optional for `scripts/validate_schema.py`.
+  `jsonschema` package is optional for `scripts/validate_schema.py` and
+  `scripts/profiles.py`, which then also run a full JSON Schema validator.
 - Node 18 or newer for `web/test/run.mjs` and the crosscheck. The page
   itself has no build step and no dependencies.
 

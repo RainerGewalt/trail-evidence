@@ -1,8 +1,8 @@
 name: pages
 
-# Publishes web/ (the browser verifier) to GitHub Pages. Pages must be
-# enabled once in the repository settings with "Source: GitHub Actions";
-# until then this workflow fails at the deploy step.
+# Publishes web/ (the browser verifier) to GitHub Pages
+# (https://rainergewalt.github.io/trail-evidence/). The repository's Pages
+# source is "GitHub Actions".
 
 on:
   push:

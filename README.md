@@ -39,9 +39,8 @@ Signature checks need Ed25519 in WebCrypto (current Chrome, Firefox and
 Safari); where it is missing, signatures are reported as not checked rather
 than as failed.
 
-The page is published from `web/` by `.github/workflows/pages.yml` once
-GitHub Pages is enabled for the repository (Settings, Pages, Source: "GitHub
-Actions"). Locally: `python3 -m http.server -d web`.
+`.github/workflows/pages.yml` publishes the page from `web/` on every push
+to `main` that touches it. Locally: `python3 -m http.server -d web`.
 
 ## Install
 
@@ -172,7 +171,7 @@ reports a `number_precision` notice for the record.
 Reason codes: when a record explains an outcome (why a job failed, why a
 publish was denied), put a code from
 [`docs/REASON_CODES.md`](docs/REASON_CODES.md) into `payload.reason_code`,
-for example `transfer.policy_violation` or `mqtt.no_matching_grant`. The
+for example `transfer.policy_violation` or `mqtt.acl_role_not_in_topic_scope`. The
 catalog is documentation; verifiers do not check it.
 
 Go:

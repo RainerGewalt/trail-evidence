@@ -667,6 +667,29 @@
       "derived_from": "producer-side loss, see common.gap"
     },
     {
+      "code": "source.subscription_stalled",
+      "namespace": "source",
+      "severity": "error",
+      "meaning": "The source's publish cycle went silent: no data and no keep-alive within the agreed keep-alive window (MaxKeepAliveCount times the publishing interval, with tolerance) while the session still answered other requests. Values that changed meanwhile were not observed; the bridge rebuilds the subscription and declares the gap with common.gap once data flows again.",
+      "producer_kinds": [
+        "source-bridge"
+      ],
+      "example": {
+        "event_type": "source.subscription.changed",
+        "payload": {
+          "state": "stalled",
+          "subscription_id": 12854,
+          "last_publish_at": "2026-11-03T20:41:07.512Z",
+          "keepalive_window_ms": 3000,
+          "reason_code": "source.subscription_stalled"
+        }
+      },
+      "derived_from": "OPC UA Part 4, 5.13.1 (keep-alive); TrailSource silent-subscription scenario",
+      "related": [
+        "common.gap"
+      ]
+    },
+    {
       "code": "ml.metrics_accepted",
       "namespace": "ml",
       "severity": "info",

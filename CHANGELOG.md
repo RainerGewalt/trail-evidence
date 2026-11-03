@@ -6,7 +6,12 @@ tagged. Until then the record format is a draft and may change.
 
 ## Unreleased
 
-Nothing yet.
+### Added
+
+- Reason code `source.subscription_stalled` (error), additive: a source
+  bridge saw neither data nor keep-alive within the agreed keep-alive
+  window while the session still answered; it rebuilds the subscription
+  and declares the missed interval with `common.gap`.
 
 ## 0.2.0 - 2026-11-03
 

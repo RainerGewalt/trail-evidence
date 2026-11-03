@@ -123,6 +123,7 @@ Source bridges (TrailSource): address space, value quality, connection. Producer
 | `source.connection_closed` | info | The bridge closed the session on purpose, usually because it is stopping. Not a failure; values that change afterwards are not observed until it reads again. | `source.connection.changed` with `{"source_address":"opc.tcp://plc-7:4840","state":"disconnected","detail":"bridge stopping"}` |
 | `source.certificate_rejected` | error | The bridge refused the source's certificate: not in its trust list, outside its validity period, revoked or of unknown revocation status, issued for another application, or not matching a configured pin. Nothing is read until an administrator trusts the certificate; the bridge keeps a copy for review. | `source.connection.changed` with `{"source_address":"opc.tcp://plc-7:4840","state":"disconnected","check":"untrusted","certificate_thumbprint":"c75e5e8f51168ba9aa9fd4af07836de63850e71f","rejected_file":"pki/rejected/c75e5e8f51168ba9aa9fd4af07836de63850e71f.der"}` |
 | `source.queue_overflow` | error | Values arrived faster than the bridge could seal them and were dropped; the payload counts them. | `source.value.dropped` with `{"entity_key":"line1/speed","dropped":37}` |
+| `source.subscription_stalled` | error | The source's publish cycle went silent: no data and no keep-alive within the agreed keep-alive window (MaxKeepAliveCount times the publishing interval, with tolerance) while the session still answered other requests. Values that changed meanwhile were not observed; the bridge rebuilds the subscription and declares the gap with common.gap once data flows again. | `source.subscription.changed` with `{"state":"stalled","subscription_id":12854,"last_publish_at":"2026-11-03T20:41:07.512Z","keepalive_window_ms":3000}` |
 
 ### `ml.*`
 
@@ -151,7 +152,7 @@ Conditions every producer can hit: gaps, restarts, configuration changes, clock 
 | `common.time_uncertain` | warning | The producer cannot vouch for its clock (no NTP sync, time reconstructed from seq); recorded_at may be off. Records written meanwhile carry time.source unknown or seq-reconstructed. | `source.clock.changed` with `{"time_source":"unknown","last_sync":"2026-11-01T22:00:00.000Z"}` |
 | `common.clock_step` | warning | The wall clock jumped forwards or backwards by more than the producer's tolerance; recorded_at values around the step are not monotonic. | `transfer.clock.stepped` with `{"step_ms":-3500,"time_source":"ntp"}` |
 
-44 codes: 10 info, 20 warning, 14 error.
+45 codes: 10 info, 20 warning, 15 error.
 
 <!-- END GENERATED -->
 
@@ -169,8 +170,9 @@ that authorizer gives an allow no reason, hence the generic `mqtt.allowed`.
 `ml.*` follow the members of the example journals (`quality`,
 `inventory_hash`, `decision.threshold`, `data_fingerprint`);
 `source.connection_established`, `source.connection_failed`,
-`source.connection_closed`, `source.certificate_rejected` and
-`source.node_changed` follow the connection records, the trust list and the
+`source.connection_closed`, `source.certificate_rejected`,
+`source.subscription_stalled` and `source.node_changed` follow the
+connection records, the trust list, the keep-alive supervision and the
 inventory diff of TrailSource. `common.*`
 mirrors the record members and finding classes in `SPEC.md` that describe
 the same conditions; `common.will_published` names the MQTT Last Will that

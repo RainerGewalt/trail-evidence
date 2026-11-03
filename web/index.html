@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <meta name="description" content="Verify a Trail Evidence journal (JSON Lines) in the browser: hashes, chain links, sequence numbers and Ed25519 signatures. Nothing is uploaded.">
+  <meta name="description" content="Verify a Trail Evidence journal (JSON Lines) in the browser: hashes, chain links, sequence numbers, profiles and Ed25519 signatures, with a state for every record. Nothing is uploaded.">
   <title>Trail Evidence Verifier</title>
   <link rel="stylesheet" href="style.css">
 </head>
@@ -45,6 +45,12 @@
         <label for="require-signatures">Require a signature on every record <span class="muted">(needs a public key)</span></label>
       </div>
 
+      <div class="field field-inline">
+        <input type="checkbox" id="strict">
+        <label for="strict">Strict: also fail on records in state <code>unknown</code> or <code>outside_scope</code> and on profiles this page does not know</label>
+      </div>
+      <p id="known-profiles" class="muted small"></p>
+
       <div class="actions">
         <button type="button" id="verify" class="primary" disabled>Verify</button>
         <span id="status" class="status" aria-live="polite"></span>
@@ -60,14 +66,38 @@
       <p id="signature-note" class="note" hidden></p>
       <p id="crypto-note" class="note" hidden></p>
 
+      <h2>Records by state</h2>
+      <ul id="state-counters" class="counters"></ul>
+
+      <h2>Profiles by state</h2>
+      <ul id="profile-counters" class="counters"></ul>
+
       <h2>Findings by class</h2>
       <ul id="counters" class="counters"></ul>
+
+      <h2>Records</h2>
+      <div class="field field-inline">
+        <label for="record-filter">Show</label>
+        <select id="record-filter">
+          <option value="all">all records</option>
+          <option value="attention">only records that need attention</option>
+        </select>
+      </div>
+      <p id="records-note" class="muted" hidden></p>
+      <div class="table-wrap">
+        <table id="records" class="records">
+          <thead>
+            <tr><th scope="col">#</th><th scope="col">Line</th><th scope="col">Stream</th><th scope="col">seq</th><th scope="col">State</th><th scope="col">Profile</th><th scope="col">Profile state</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
 
       <h2>Streams</h2>
       <ul id="streams" class="cards"></ul>
 
       <h2>Findings</h2>
-      <p id="no-findings" class="muted" hidden>No findings. Every hash recomputes, every link and sequence number matches.</p>
+      <p id="no-findings" class="muted" hidden>No findings. Every hash recomputes, every link and sequence number matches, every profile was checked.</p>
       <ol id="findings" class="cards findings"></ol>
 
       <details class="raw-report">
@@ -94,9 +124,20 @@
         point in time. The specification lists these limits in section 6.3.
       </p>
       <p>
-        Classes: <code>schema_invalid</code>, <code>hash_mismatch</code>, <code>chain_break</code>,
-        <code>seq_gap</code> and <code>signature_invalid</code> are errors and fail the journal.
-        <code>restart</code> and <code>number_precision</code> are notices.
+        Every record gets one of four states. <strong>valid</strong>: all checks ran and passed.
+        <strong>invalid</strong>: a check failed (<code>schema_invalid</code>, <code>hash_mismatch</code>,
+        <code>chain_break</code>, <code>seq_mismatch</code>, <code>signature_invalid</code>,
+        <code>profile_invalid</code>). <strong>unknown</strong>: the record's own hashes are correct, but its
+        predecessor is not in the file, so its link cannot be checked (<code>seq_gap</code>); a record that
+        links correctly to it is valid relative to it (<code>after_unknown</code>).
+        <strong>outside scope</strong>: the record names another format or major version and is not checked.
+      </p>
+      <p>
+        A journal passes when no record is invalid. Unknown and out-of-scope records are counted, not failed:
+        deleting a record leaves its successor unknown rather than invalid. Tick <em>Strict</em> to fail on them,
+        and on profiles this page does not know. A record's profile state (<code>none</code>, <code>valid</code>,
+        <code>invalid</code>, <code>outside_scope</code>) says whether its payload was checked against the
+        schema of its profile.
       </p>
     </section>
   </main>
@@ -105,12 +146,13 @@
     <p>
       <a href="https://github.com/RainerGewalt/trail-evidence">Repository</a> ·
       <a href="https://github.com/RainerGewalt/trail-evidence/blob/main/SPEC.md">Specification</a> ·
-      Format <code>trail.evidence/1</code> (v0.1 draft) ·
+      Format <code>trail.evidence/1</code> (v0.2 draft) ·
       Same results as the Go and Python verifiers, checked by the test suite.
     </p>
     <p>Hashing uses WebCrypto; Ed25519 signature checks need a browser whose WebCrypto implements Ed25519 (current Chrome, Firefox and Safari). Otherwise signatures are reported as not checked.</p>
   </footer>
 
+  <script src="profiles.js"></script>
   <script src="verify.js"></script>
   <script src="app.js"></script>
 </body>

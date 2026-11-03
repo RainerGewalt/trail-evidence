@@ -1,22 +1,30 @@
 /*
  * Trail Evidence Verifier: RFC 8785 canonicalisation, SHA-256 hashing,
- * chain and signature checks for trail.evidence/1 journals (SPEC.md).
+ * chain, profile and signature checks for trail.evidence/1 journals
+ * (SPEC.md), with a state per record (valid, invalid, unknown,
+ * outside_scope).
  *
- * Runs unchanged in a browser (plain <script src="verify.js">, exposes
- * window.TrailEvidence) and in Node 18+ (require("./verify.js")). No
- * dependencies: SHA-256 and Ed25519 come from WebCrypto (crypto.subtle).
- * The results must match the Go and Python reference implementations;
- * web/test/run.mjs checks that against testdata/.
+ * Runs unchanged in a browser (plain <script src="profiles.js"> and
+ * <script src="verify.js">, exposes window.TrailEvidence) and in Node 18+
+ * (require("./verify.js")). No dependencies: SHA-256 and Ed25519 come from
+ * WebCrypto (crypto.subtle). The profile registry comes from profiles.js,
+ * which scripts/profiles.py generates from profiles/. The results must match
+ * the Go and Python reference implementations; web/test/run.mjs checks that
+ * against testdata/.
  */
 (function (root, factory) {
   "use strict";
-  const api = factory();
+  let profiles = root && root.TrailEvidenceProfiles;
+  if (!profiles && typeof module === "object" && module && module.exports && typeof require === "function") {
+    profiles = require("./profiles.js");
+  }
+  const api = factory(profiles || {});
   if (typeof module === "object" && module && module.exports) {
     module.exports = api;
   } else {
     root.TrailEvidence = api;
   }
-})(typeof globalThis !== "undefined" ? globalThis : this, function () {
+})(typeof globalThis !== "undefined" ? globalThis : this, function (profileSchemas) {
   "use strict";
 
   const SCHEMA = "trail.evidence/1";
@@ -24,17 +32,38 @@
   const GENESIS_HASH = HASH_PREFIX + "0".repeat(64);
   const SIGNATURE_ALG = "ed25519";
   const MAX_SAFE_INTEGER = 9007199254740992n; // 2^53
+  const MAX_SEQ = 18446744073709551615n; // 2^64 - 1
 
   // Finding classes and severities, exactly as in Go and Python.
+  const SCHEMA_INVALID = "schema_invalid";
   const HASH_MISMATCH = "hash_mismatch";
   const CHAIN_BREAK = "chain_break";
-  const SEQ_GAP = "seq_gap";
-  const RESTART = "restart";
+  const SEQ_MISMATCH = "seq_mismatch";
   const SIGNATURE_INVALID = "signature_invalid";
-  const SCHEMA_INVALID = "schema_invalid";
+  const PROFILE_INVALID = "profile_invalid";
+  const SEQ_GAP = "seq_gap";
+  const OUTSIDE_SCOPE = "outside_scope";
+  const PROFILE_UNKNOWN = "profile_unknown";
+  const RESTART = "restart";
+  const AFTER_UNKNOWN = "after_unknown";
+  const LEGACY_INTEGER_SEQ = "legacy_integer_seq";
   const NUMBER_PRECISION = "number_precision";
   const ERROR = "error";
   const NOTICE = "notice";
+  const ERROR_CLASSES = [SCHEMA_INVALID, HASH_MISMATCH, CHAIN_BREAK, SEQ_MISMATCH, SIGNATURE_INVALID, PROFILE_INVALID];
+  const NOTICE_CLASSES = [SEQ_GAP, OUTSIDE_SCOPE, PROFILE_UNKNOWN, RESTART, AFTER_UNKNOWN, LEGACY_INTEGER_SEQ, NUMBER_PRECISION];
+  // With strict verification these notices are reported as errors.
+  const STRICT_CLASSES = new Set([SEQ_GAP, OUTSIDE_SCOPE, PROFILE_UNKNOWN]);
+
+  // Record states and profile states (SPEC.md section 6.1).
+  const VALID = "valid";
+  const INVALID = "invalid";
+  const UNKNOWN = "unknown";
+  const OUTSIDE = "outside_scope";
+  const PROFILE_NONE = "none";
+  const STATES = [VALID, INVALID, UNKNOWN, OUTSIDE];
+  const PROFILE_STATES = [PROFILE_NONE, VALID, INVALID, OUTSIDE];
+  const AFTER_UNKNOWN_MESSAGE = "links to a record in state unknown; this record is valid relative to that record, not to the start of the stream";
 
   const PRODUCER_KINDS = new Set(["broker", "transfer-worker", "source-bridge", "ml-pipeline", "persistence", "other"]);
   const TIME_SOURCES = new Set(["system", "ntp", "tsa", "seq-reconstructed", "unknown"]);
@@ -45,6 +74,7 @@
   const CORE_MEMBERS = [
     "schema", "producer", "stream_id", "seq", "prev_hash", "event_type",
     "time", "actor", "policy", "content_hash", "chain_restart", "anchor_hash",
+    "profile",
   ];
   const REQUIRED_MEMBERS = [
     "schema", "producer", "stream_id", "seq", "prev_hash", "event_type",
@@ -52,7 +82,7 @@
   ];
   const KNOWN_MEMBERS = new Set(REQUIRED_MEMBERS.concat([
     "chain_restart", "anchor_hash", "signature", "correlation_id", "job_id",
-    "decision_id", "context", "redaction", "anchor",
+    "decision_id", "context", "redaction", "anchor", "profile",
   ]));
   const OBJECT_MEMBERS = {
     producer: new Set(["kind", "id", "version"]),
@@ -64,7 +94,7 @@
     anchor: new Set(["kind", "ref"]),
   };
   const STRING_MEMBERS = ["schema", "stream_id", "prev_hash", "event_type", "content_hash",
-    "chain_hash", "anchor_hash", "correlation_id", "job_id", "decision_id"];
+    "chain_hash", "anchor_hash", "correlation_id", "job_id", "decision_id", "profile"];
   const NESTED_STRINGS = {
     producer: ["kind", "id", "version"],
     time: ["recorded_at", "occurred_at", "read_at", "source"],
@@ -81,8 +111,10 @@
   const TIMESTAMP_RE = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,9})?Z$/;
   const EVENT_TYPE_RE = /^[a-z][a-z0-9_-]*\.[a-z][a-z0-9_-]*\.[a-z][a-z0-9_-]*$/;
   const JSON_POINTER_RE = /^(\/([^/~]|~0|~1)*)*$/;
-  // A JSON integer literal that a strict uint64 decoder (Go) accepts.
+  // The canonical decimal form of seq, for the string and the legacy number form.
   const SEQ_LITERAL_RE = /^(?:0|[1-9][0-9]*)$/;
+  const PROFILE_RE = /^[a-z][a-z0-9]*(\.[a-z][a-z0-9_]*)+\/[1-9][0-9]*$/;
+  const SCHEMA_ID_RE = /^[a-z][a-z0-9_-]*(\.[a-z][a-z0-9_-]*)*\/(0|[1-9][0-9]*)$/;
   const NUMBER_LITERAL_RE = /-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/y;
 
   const textEncoder = new TextEncoder();
@@ -552,12 +584,46 @@
   }
 
   /**
+   * Read seq: a JSON string in canonical decimal form, or the legacy JSON
+   * number form of format 0.1, whose literal text is taken from the raw
+   * record (JSON.parse would round it). Values are BigInt and must not
+   * exceed 2^64 - 1. Returns {present, ok, legacy, value}.
+   */
+  function parseSeq(record, spans) {
+    if (!has(record, "seq")) return { present: false, ok: false, legacy: false, value: 0n };
+    const bad = { present: true, ok: false, legacy: false, value: 0n };
+    let text;
+    let legacy = false;
+    if (typeof record.seq === "string") {
+      text = record.seq;
+    } else if (typeof record.seq === "number") {
+      text = spans ? spans.get("seq") : undefined;
+      if (text === undefined) text = Number.isSafeInteger(record.seq) && record.seq >= 0 ? String(record.seq) : "";
+      legacy = true;
+    } else {
+      return bad;
+    }
+    if (!SEQ_LITERAL_RE.test(text)) return bad;
+    const value = BigInt(text);
+    if (value > MAX_SEQ) return bad;
+    return { present: true, ok: true, legacy, value };
+  }
+
+  /** The schema name when the record names another format or major version, else null. */
+  function foreignSchema(record) {
+    const s = record.schema;
+    if (isStr(s) && s !== SCHEMA && SCHEMA_ID_RE.test(s)) return s;
+    return null;
+  }
+
+  /**
    * Type-level checks that decide whether a record is decodable at all. A
    * record that fails here is schema_invalid and skipped entirely: it does
    * not advance the stream state. Mirrors Go's strict typed decoder and the
-   * Python decode_problems. null passes this gate and is rejected later.
+   * Python decode_problems. null passes this gate and is rejected later; a
+   * malformed seq is a structural problem, not a decoding one.
    */
-  function decodeProblems(record, spans) {
+  function decodeProblems(record) {
     const problems = [];
     const add = (m) => problems.push(m);
     for (const k of sortedKeys(record)) {
@@ -565,11 +631,6 @@
     }
     for (const k of STRING_MEMBERS) {
       if (has(record, k) && record[k] !== null && !isStr(record[k])) add(k + " must be a string");
-    }
-    if (has(record, "seq") && record.seq !== null) {
-      const lit = spans ? spans.get("seq") : undefined;
-      const ok = typeof record.seq === "number" && (lit === undefined ? Number.isInteger(record.seq) && record.seq >= 0 : SEQ_LITERAL_RE.test(lit));
-      if (!ok) add("seq must be a non-negative integer");
     }
     if (has(record, "chain_restart") && record.chain_restart !== null && typeof record.chain_restart !== "boolean") {
       add("chain_restart must be a boolean");
@@ -596,8 +657,9 @@
     return problems;
   }
 
-  /** Structural checks (SPEC.md section 6, step 2). Returns messages. */
-  function validateStructure(record) {
+  /** Structural checks (SPEC.md section 6.3, step 3). Returns messages. */
+  function validateStructure(record, seq) {
+    if (!seq) seq = parseSeq(record, null);
     const problems = [];
     const add = (m) => problems.push(m);
     for (const k of REQUIRED_MEMBERS) {
@@ -630,8 +692,11 @@
       if (!nonempty(p.version)) add("producer.version must not be empty");
     }
     if (has(record, "stream_id") && !nonempty(record.stream_id)) add("stream_id must not be empty");
-    if (has(record, "seq") && record.seq !== null && !(typeof record.seq === "number" && Number.isInteger(record.seq) && record.seq >= 0)) {
-      add("seq must be a non-negative integer");
+    if (seq.present && !seq.ok && record.seq !== null) {
+      add('seq must be a decimal string from "0" to "18446744073709551615" without sign, leading zeros or fraction, got ' + q(record.seq));
+    }
+    if (has(record, "profile") && record.profile !== null && !(isStr(record.profile) && PROFILE_RE.test(record.profile))) {
+      add("profile " + q(record.profile) + " is not of the form <name>/<major>");
     }
     if (has(record, "prev_hash") && !(isStr(record.prev_hash) && HASH_RE.test(record.prev_hash))) {
       add("prev_hash does not match sha256:<64 hex>");
@@ -715,38 +780,163 @@
     return problems;
   }
 
+  // ---------------------------------------------------------------- profiles
+  //
+  // A profile schema uses a subset of JSON Schema: type, required,
+  // properties and items, plus annotations. Members a profile does not name
+  // are always allowed (minor versions within a major only add members).
+
+  const PROFILE_KEYWORDS = new Set(["$schema", "$id", "$comment", "title", "description", "examples", "type", "required", "properties", "items"]);
+  const PROFILE_TYPES = new Set(["object", "array", "string", "number", "integer", "boolean", "null"]);
+
+  function compileProfileSchema(doc, where) {
+    const at = where || "schema root";
+    if (!isObj(doc)) throw new Error(at + ": a schema must be an object");
+    for (const k of Object.keys(doc)) {
+      if (!PROFILE_KEYWORDS.has(k)) throw new Error(at + ": keyword " + q(k) + " is not allowed in a profile schema");
+    }
+    const n = { types: [], required: [], properties: new Map(), items: null };
+    if (isStr(doc.type)) n.types = [doc.type];
+    else if (Array.isArray(doc.type) && doc.type.every(isStr)) n.types = doc.type.slice();
+    else if (doc.type !== undefined) throw new Error(at + ": type must be a string or an array of strings");
+    for (const t of n.types) {
+      if (!PROFILE_TYPES.has(t)) throw new Error(at + ": unknown type " + q(t));
+    }
+    if (has(doc, "required")) {
+      if (!(Array.isArray(doc.required) && doc.required.every(isStr))) throw new Error(at + ": required must be an array of strings");
+      n.required = doc.required.slice();
+    }
+    if (has(doc, "properties")) {
+      if (!isObj(doc.properties)) throw new Error(at + ": properties must be an object");
+      for (const name of sortedKeys(doc.properties)) {
+        n.properties.set(name, compileProfileSchema(doc.properties[name], (where || "") + "/properties/" + name));
+      }
+    }
+    if (has(doc, "items")) n.items = compileProfileSchema(doc.items, (where || "") + "/items");
+    return n;
+  }
+
+  const PROFILES = new Map();
+  for (const id of Object.keys(profileSchemas).sort()) {
+    if (!PROFILE_RE.test(id)) throw new Error("profile id " + q(id) + " is not <name>/<major>");
+    PROFILES.set(id, compileProfileSchema(profileSchemas[id], ""));
+  }
+
+  function jsonTypeName(v) {
+    if (v === null) return "null";
+    if (typeof v === "boolean") return "boolean";
+    if (Array.isArray(v)) return "array";
+    if (typeof v === "object") return "object";
+    if (typeof v === "string") return "string";
+    if (typeof v === "number") return "number";
+    return "unknown";
+  }
+
+  // JSON Schema semantics: "integer" is any number without a fractional part.
+  function matchesType(v, t) {
+    switch (t) {
+      case "null": return v === null;
+      case "boolean": return typeof v === "boolean";
+      case "object": return isObj(v);
+      case "array": return Array.isArray(v);
+      case "string": return typeof v === "string";
+      case "number": return typeof v === "number";
+      case "integer": return typeof v === "number" && Number.isInteger(v);
+      default: return false;
+    }
+  }
+
+  const pointerToken = (s) => s.replace(/~/g, "~0").replace(/\//g, "~1");
+
+  function validateNode(n, v, at, problems) {
+    if (n.types.length && !n.types.some((t) => matchesType(v, t))) {
+      problems.push(at + ": expected " + n.types.join(" or ") + ", got " + jsonTypeName(v));
+      return;
+    }
+    if (isObj(v)) {
+      for (const name of n.required) {
+        if (!has(v, name)) problems.push(at + "/" + pointerToken(name) + ": missing required member");
+      }
+      for (const [name, sub] of n.properties) {
+        if (has(v, name)) validateNode(sub, v[name], at + "/" + pointerToken(name), problems);
+      }
+    }
+    if (Array.isArray(v) && n.items) {
+      v.forEach((x, i) => validateNode(n.items, x, at + "/" + i, problems));
+    }
+  }
+
+  /** Identifiers of the profiles this verifier knows, sorted. */
+  function profiles() {
+    return Array.from(PROFILES.keys());
+  }
+
+  /**
+   * Check a parsed payload against a known profile. Returns {known,
+   * problems}; problems are in a fixed order (type, required members in
+   * schema order, named members in code point order, array items).
+   */
+  function validateProfilePayload(id, payload, present) {
+    const n = PROFILES.get(id);
+    if (!n) return { known: false, problems: [] };
+    if (present === false) return { known: true, problems: ["payload is missing"] };
+    const problems = [];
+    validateNode(n, payload, "payload", problems);
+    return { known: true, problems };
+  }
+
+  function checkProfile(record) {
+    if (!has(record, "profile")) return { profile: null, state: PROFILE_NONE, finding: null };
+    const id = record.profile;
+    if (!(isStr(id) && PROFILE_RE.test(id))) return { profile: isStr(id) ? id : null, state: INVALID, finding: null };
+    const { known, problems } = validateProfilePayload(id, record.payload, has(record, "payload"));
+    if (!known) {
+      const listed = profiles().join(", ") || "none";
+      return { profile: id, state: OUTSIDE, finding: finding(PROFILE_UNKNOWN, NOTICE, "profile " + id + " is not known to this verifier (known: " + listed + "); the payload was not checked against a profile") };
+    }
+    if (problems.length) {
+      return { profile: id, state: INVALID, finding: finding(PROFILE_INVALID, ERROR, "payload does not match profile " + id + ": " + problems.join("; ")) };
+    }
+    return { profile: id, state: VALID, finding: null };
+  }
+
   // ---------------------------------------------------------------- verification
 
   function finding(cls, severity, message) {
     return { index: 0, line: 0, class: cls, severity, message };
   }
 
-  function withRecord(f, record) {
-    const out = { index: f.index, line: f.line };
-    if (record) {
-      out.stream_id = isStr(record.stream_id) ? record.stream_id : "";
-      out.seq = typeof record.seq === "number" ? record.seq : null;
+  function stateOf(findings) {
+    let state = VALID;
+    for (const f of findings) {
+      if (ERROR_CLASSES.includes(f.class)) return INVALID;
+      if (f.class === SEQ_GAP) state = UNKNOWN;
     }
-    out.class = f.class;
-    out.severity = f.severity;
-    out.message = f.message;
-    return out;
+    return state;
   }
 
   /**
-   * Check one record (raw JSON text) on its own: structure and both hashes.
-   * Resolves to {record, findings}; record is null when the text is not a
-   * decodable record. Findings carry index and line 0.
+   * Check one record (raw JSON text) on its own: scope, decoding,
+   * structure, both hashes and the profile. Resolves to {record, findings,
+   * state, profile, profileState, seq, restart}; record is null when the
+   * text is not a decodable record of this contract; state is valid,
+   * invalid or outside_scope (unknown needs the stream). Findings carry
+   * index and line 0.
    */
-  async function verifyRecord(raw) {
+  async function checkRecord(raw) {
+    const none = (findings, state) => ({ record: null, findings, state, profile: null, profileState: PROFILE_NONE, seq: parseSeq({}, null), restart: false });
     let record;
     try {
       record = JSON.parse(raw);
     } catch (err) {
-      return { record: null, findings: [finding(SCHEMA_INVALID, ERROR, "invalid JSON: " + err.message)] };
+      return none([finding(SCHEMA_INVALID, ERROR, "invalid JSON: " + err.message)], INVALID);
     }
     if (!isObj(record)) {
-      return { record: null, findings: [finding(SCHEMA_INVALID, ERROR, "record is not a JSON object")] };
+      return none([finding(SCHEMA_INVALID, ERROR, "record is not a JSON object")], INVALID);
+    }
+    const foreign = foreignSchema(record);
+    if (foreign !== null) {
+      return none([finding(OUTSIDE_SCOPE, NOTICE, "schema " + q(foreign) + " is not " + SCHEMA + "; the record is not checked and does not take part in any chain")], OUTSIDE);
     }
     let spans = null;
     try {
@@ -754,85 +944,117 @@
     } catch (err) {
       spans = null;
     }
-    const findings = [];
-    const undecodable = decodeProblems(record, spans);
+    const seq = parseSeq(record, spans);
+    const undecodable = decodeProblems(record);
     if (undecodable.length) {
-      for (const m of undecodable) findings.push(finding(SCHEMA_INVALID, ERROR, m));
-      for (const k of REQUIRED_MEMBERS) {
-        if (!has(record, k)) findings.push(finding(SCHEMA_INVALID, ERROR, "missing required member " + q(k)));
-      }
-      return { record: null, findings };
+      const missing = REQUIRED_MEMBERS.filter((k) => !has(record, k)).map((k) => "missing required member " + q(k));
+      const r = none([finding(SCHEMA_INVALID, ERROR, undecodable.concat(missing).join("; "))], INVALID);
+      r.seq = seq;
+      return r;
     }
-    for (const m of validateStructure(record)) findings.push(finding(SCHEMA_INVALID, ERROR, m));
-    let h;
+    const findings = [];
+    const problems = validateStructure(record, seq);
+    let h = null;
     try {
       h = await computeHashes(record);
     } catch (err) {
-      findings.push(finding(SCHEMA_INVALID, ERROR, err.message));
-      return { record, findings };
+      problems.push(err.message);
     }
-    if (h.content_hash !== record.content_hash) {
-      findings.push(finding(HASH_MISMATCH, ERROR, "content_hash mismatch: recorded " + record.content_hash + ", computed " + h.content_hash));
+    if (problems.length) findings.push(finding(SCHEMA_INVALID, ERROR, problems.join("; ")));
+    if (h !== null) {
+      if (h.content_hash !== record.content_hash) {
+        findings.push(finding(HASH_MISMATCH, ERROR, "content_hash mismatch: recorded " + record.content_hash + ", computed " + h.content_hash));
+      }
+      if (h.chain_hash !== record.chain_hash) {
+        findings.push(finding(HASH_MISMATCH, ERROR, "chain_hash mismatch: recorded " + record.chain_hash + ", computed " + h.chain_hash));
+      }
+      const payloadRaw = spans ? spans.get("payload") : undefined;
+      const n = payloadRaw === undefined ? 0 : unsafeIntegers(payloadRaw);
+      if (n > 0) {
+        findings.push(finding(NUMBER_PRECISION, NOTICE, "payload contains " + n + " integer(s) outside +/-2^53; JCS renders them as IEEE-754 doubles, transport such values as strings"));
+      }
     }
-    if (h.chain_hash !== record.chain_hash) {
-      findings.push(finding(HASH_MISMATCH, ERROR, "chain_hash mismatch: recorded " + record.chain_hash + ", computed " + h.chain_hash));
+    if (seq.ok && seq.legacy) {
+      findings.push(finding(LEGACY_INTEGER_SEQ, NOTICE, "seq " + seq.value + ' is a JSON number; write it as the string "' + seq.value + '" (accepted during 0.x, schema_invalid from 1.0)'));
     }
-    const payloadRaw = spans ? spans.get("payload") : undefined;
-    const n = payloadRaw === undefined ? 0 : unsafeIntegers(payloadRaw);
-    if (n > 0) {
-      findings.push(finding(NUMBER_PRECISION, NOTICE, "payload contains " + n + " integer(s) outside +/-2^53; JCS renders them as IEEE-754 doubles, transport such values as strings"));
-    }
-    return { record, findings };
+    const pr = checkProfile(record);
+    if (pr.finding) findings.push(pr.finding);
+    return {
+      record, findings, state: stateOf(findings), profile: pr.profile, profileState: pr.state, seq,
+      restart: record.chain_restart === true && has(record, "anchor_hash"),
+    };
   }
 
-  function checkChain(streams, record, index, line) {
-    const sid = isStr(record.stream_id) ? record.stream_id : "";
-    const seq = typeof record.seq === "number" ? record.seq : null;
-    const seqNum = seq === null ? 0 : seq;
-    let st = streams.get(sid);
-    if (!st) {
-      st = { summary: { stream_id: sid, records: 0, first_seq: seqNum, last_seq: 0, last_chain_hash: "", restarts: 0 }, seen: false };
-      streams.set(sid, st);
-    }
-    const out = [];
-    const f = (cls, sev, msg) => ({ index, line, stream_id: sid, seq, class: cls, severity: sev, message: msg });
+  /**
+   * Check one record (raw JSON text) on its own. Resolves to {record,
+   * findings, state, profileState}; see checkRecord.
+   */
+  async function verifyRecord(raw) {
+    const c = await checkRecord(raw);
+    return { record: c.record, findings: c.findings, state: c.state, profileState: c.profileState };
+  }
+
+  function seqBehind(seq, last) {
+    if (seq === last) return "seq " + seq + " repeats the seq of the previous record";
+    return "seq " + seq + " goes backwards (previous seq " + last + ")";
+  }
+
+  /** Judge a positioned record against its stream (SPEC.md section 6.3, step 5). */
+  function checkChain(st, c) {
+    const record = c.record;
+    const seq = c.seq.value;
     const s = st.summary;
+    const out = [];
+    const f = finding;
+    const last = s.last_chain_hash;
     const prevHash = record.prev_hash;
-    if (record.chain_restart === true && has(record, "anchor_hash")) {
+    if (c.restart) {
       const anchor = record.anchor_hash;
-      let msg = "chain restart at seq " + seqNum + ", anchor " + anchor;
+      let msg = "chain restart at seq " + seq + ", anchor " + anchor;
       if (!st.seen && anchor !== GENESIS_HASH) msg += " (previous segment not in this journal)";
       if (st.seen && anchor === GENESIS_HASH) msg += " (anchor unknown: genesis)";
       out.push(f(RESTART, NOTICE, msg));
       s.restarts++;
-      if (st.seen && anchor !== GENESIS_HASH && anchor !== s.last_chain_hash) {
-        out.push(f(CHAIN_BREAK, ERROR, "anchor_hash " + anchor + " does not match the last chain_hash " + s.last_chain_hash + " of the previous segment"));
-      }
-    } else if (!st.seen) {
-      if (prevHash !== GENESIS_HASH) {
-        out.push(f(CHAIN_BREAK, ERROR, "first record of stream has prev_hash " + prevHash + " instead of genesis and is not marked chain_restart"));
-      } else if (seqNum !== 0) {
-        out.push(f(SEQ_GAP, ERROR, "first record of stream has seq " + seqNum + ", expected 0"));
+      if (st.seen && anchor !== GENESIS_HASH && anchor !== last) {
+        out.push(f(CHAIN_BREAK, ERROR, "anchor_hash " + anchor + " does not match the last chain_hash " + last + " of the previous segment"));
+      } else if (st.seen && st.lastUnknown && anchor === last) {
+        out.push(f(AFTER_UNKNOWN, NOTICE, AFTER_UNKNOWN_MESSAGE));
       }
     } else {
-      if (prevHash !== s.last_chain_hash) {
-        out.push(f(CHAIN_BREAK, ERROR, "prev_hash " + prevHash + " does not match previous chain_hash " + s.last_chain_hash));
-      }
-      if (seqNum !== s.last_seq + 1) {
-        out.push(f(SEQ_GAP, ERROR, "seq " + seqNum + ", expected " + (s.last_seq + 1)));
+      const linked = prevHash === (st.seen ? last : GENESIS_HASH);
+      const expected = st.seen ? st.lastSeq + 1n : 0n;
+      const pos = seq > expected ? 1 : seq < expected ? -1 : 0;
+      if (linked && pos === 0) {
+        if (st.seen && st.lastUnknown) out.push(f(AFTER_UNKNOWN, NOTICE, AFTER_UNKNOWN_MESSAGE));
+      } else if (linked && pos > 0 && !st.seen) {
+        out.push(f(SEQ_MISMATCH, ERROR, "first record of stream links to genesis but has seq " + seq + ", expected 0"));
+      } else if (linked && pos > 0) {
+        out.push(f(SEQ_MISMATCH, ERROR, "seq " + seq + ", expected " + expected + ": prev_hash links to the record with seq " + st.lastSeq + ", so no record can be missing in between"));
+      } else if (linked) {
+        out.push(f(SEQ_MISMATCH, ERROR, seqBehind(seq, st.lastSeq)));
+      } else if (pos === 0 && !st.seen) {
+        out.push(f(CHAIN_BREAK, ERROR, "first record of stream has seq 0 but prev_hash " + prevHash + " instead of genesis and is not marked chain_restart"));
+      } else if (pos === 0) {
+        out.push(f(CHAIN_BREAK, ERROR, "prev_hash " + prevHash + " does not match previous chain_hash " + last));
+      } else if (pos > 0 && !st.seen) {
+        out.push(f(SEQ_GAP, NOTICE, "first record of stream has seq " + seq + " and prev_hash " + prevHash + ": its predecessor is not in this journal"));
+      } else if (pos > 0) {
+        out.push(f(SEQ_GAP, NOTICE, "seq " + seq + " after seq " + st.lastSeq + ", and prev_hash " + prevHash + " does not link to the last checked record: its predecessor is not in this journal"));
+      } else {
+        out.push(f(CHAIN_BREAK, ERROR, "prev_hash " + prevHash + " does not match previous chain_hash " + last));
+        out.push(f(SEQ_MISMATCH, ERROR, seqBehind(seq, st.lastSeq)));
       }
     }
     st.seen = true;
     s.records++;
-    s.last_seq = seqNum;
+    st.lastSeq = seq;
+    s.last_seq = String(seq);
     s.last_chain_hash = isStr(record.chain_hash) ? record.chain_hash : "";
     return out;
   }
 
-  async function checkSignature(report, record, index, line, opts, state) {
-    const sid = isStr(record.stream_id) ? record.stream_id : "";
-    const seq = typeof record.seq === "number" ? record.seq : null;
-    const f = (msg) => ({ index, line, stream_id: sid, seq, class: SIGNATURE_INVALID, severity: ERROR, message: msg });
+  async function checkSignature(report, record, opts, state) {
+    const f = (msg) => finding(SIGNATURE_INVALID, ERROR, msg);
     const sig = record.signature;
     if (sig === undefined || sig === null) {
       if (opts.publicKey) {
@@ -861,14 +1083,15 @@
 
   function addFindings(report, findings) {
     for (const f of findings) {
+      if (report.strict && STRICT_CLASSES.has(f.class)) f.severity = ERROR;
       report.findings.push(f);
       if (f.severity === ERROR) {
         report.errors++;
         report.ok = false;
       } else {
         report.notices++;
-        if (f.class === RESTART) report.restarts++;
       }
+      if (f.class === RESTART) report.restarts++;
     }
   }
 
@@ -878,20 +1101,24 @@
 
   /**
    * Verify a JSON Lines journal given as text. Options: publicKey
-   * (Uint8Array of 32 bytes, optional), requireSignatures (boolean),
-   * onProgress(recordsSoFar) called every 500 records. Resolves to a report
-   * with the same members as the Go and Python JSON reports, plus
-   * signature_check: "unavailable" when a key was given but this runtime
-   * cannot verify Ed25519 signatures.
+   * (Uint8Array of 32 bytes, optional), requireSignatures (boolean), strict
+   * (boolean), onProgress(recordsSoFar) called every 500 records. Resolves
+   * to a report with the same members as the Go and Python JSON reports
+   * (seq values as BigInt in results, findings and streams; reportToJSON
+   * renders them as decimal strings), plus signature_check: "unavailable"
+   * when a key was given but this runtime cannot verify Ed25519 signatures.
    */
   async function verifyStream(text, options) {
-    const opts = Object.assign({ publicKey: null, requireSignatures: false, onProgress: null }, options || {});
+    const opts = Object.assign({ publicKey: null, requireSignatures: false, strict: false, onProgress: null }, options || {});
     if (opts.requireSignatures && !opts.publicKey) {
       throw new Error("requireSignatures needs a publicKey");
     }
     const report = {
-      ok: true, records: 0, errors: 0, restarts: 0, signed_records: 0,
-      signatures_verified: 0, unsigned_records: 0, notices: 0, streams: [], findings: [],
+      ok: true, strict: !!opts.strict, records: 0, errors: 0, restarts: 0, signed_records: 0,
+      signatures_verified: 0, unsigned_records: 0, notices: 0,
+      states: Object.fromEntries(STATES.map((k) => [k, 0])),
+      profile_states: Object.fromEntries(PROFILE_STATES.map((k) => [k, 0])),
+      streams: [], results: [], findings: [],
     };
     const streams = new Map();
     const state = { ed25519: null };
@@ -903,11 +1130,35 @@
       const line = i + 1;
       index++;
       report.records++;
-      const { record, findings } = await verifyRecord(trimmed);
-      addFindings(report, findings.map((f) => withRecord({ ...f, index, line }, record)));
-      if (record === null) continue;
-      addFindings(report, checkChain(streams, record, index, line));
-      addFindings(report, await checkSignature(report, record, index, line, opts, state));
+      const c = await checkRecord(trimmed);
+      const res = { index, line, stream_id: null, seq: null, state: c.state, profile: c.profile, profile_state: c.profileState };
+      let findings = c.findings.slice();
+      if (c.record !== null) {
+        const sid = c.record.stream_id;
+        res.stream_id = nonempty(sid) ? sid : null;
+        res.seq = c.seq.ok ? c.seq.value : null;
+        if (res.stream_id !== null && c.seq.ok) {
+          let st = streams.get(sid);
+          if (!st) {
+            st = { summary: { stream_id: sid, records: 0, first_seq: String(c.seq.value), last_seq: "0", last_chain_hash: "", restarts: 0 }, seen: false, lastSeq: 0n, lastUnknown: false };
+            streams.set(sid, st);
+          }
+          findings = findings.concat(checkChain(st, c));
+        }
+        findings = findings.concat(await checkSignature(report, c.record, opts, state));
+      }
+      if (c.state !== OUTSIDE) res.state = stateOf(findings);
+      if (c.record !== null && res.stream_id !== null && c.seq.ok) streams.get(c.record.stream_id).lastUnknown = res.state === UNKNOWN;
+      for (const f of findings) {
+        f.index = index;
+        f.line = line;
+        f.stream_id = res.stream_id;
+        f.seq = res.seq;
+      }
+      addFindings(report, findings);
+      report.results.push(res);
+      report.states[res.state]++;
+      report.profile_states[res.profile_state]++;
       if (opts.onProgress && report.records % 500 === 0) {
         opts.onProgress(report.records);
         await new Promise((resolve) => setTimeout(resolve, 0));
@@ -920,8 +1171,12 @@
 
   /** One-line summary in the style of the Go and Python CLIs. */
   function summary(r) {
-    let s = (r.ok ? "OK: " : "FAIL: ") + r.records + " record(s) in " + r.streams.length + " stream(s)";
-    s += r.ok ? ", hash chain intact" : ", " + r.errors + " error(s)";
+    let s = (r.ok ? "OK" : "FAIL") + (r.strict ? " (strict)" : "") + ": " + r.records + " record(s) in " + r.streams.length + " stream(s)";
+    if (r.ok && !r.states[UNKNOWN]) s += ", hash chain intact";
+    else if (r.ok) s += ", no invalid record";
+    else s += ", " + r.errors + " error(s)";
+    if (r.states[UNKNOWN]) s += ", " + r.states[UNKNOWN] + " unknown";
+    if (r.states[OUTSIDE]) s += ", " + r.states[OUTSIDE] + " outside scope";
     if (r.restarts > 0) s += ", " + r.restarts + " restart(s)";
     if (r.signed_records > 0) {
       s += ", " + r.signed_records + " signed record(s)";
@@ -932,33 +1187,50 @@
     return s;
   }
 
-  /** Report findings as JSON exactly like the Go CLI (seq omitted when unknown). */
+  /** The report as JSON members exactly like the Go CLI (seq as decimal strings, omitted when unknown). */
   function reportToJSON(report) {
-    const out = Object.assign({}, report);
-    delete out.signature_check;
-    out.findings = report.findings.map((f) => {
-      const o = { index: f.index, line: f.line };
-      if (f.stream_id !== undefined && f.stream_id !== null) o.stream_id = f.stream_id;
-      if (f.seq !== undefined && f.seq !== null) o.seq = f.seq;
-      o.class = f.class;
-      o.severity = f.severity;
-      o.message = f.message;
+    const out = {};
+    for (const k of ["ok", "strict", "records", "errors", "restarts", "signed_records", "signatures_verified", "unsigned_records", "notices"]) {
+      out[k] = report[k];
+    }
+    out.states = Object.assign({}, report.states);
+    out.profile_states = Object.assign({}, report.profile_states);
+    out.streams = report.streams.map((s) => Object.assign({}, s));
+    out.results = report.results.map((r) => {
+      const o = { index: r.index, line: r.line };
+      if (r.stream_id) o.stream_id = r.stream_id;
+      if (r.seq !== null && r.seq !== undefined) o.seq = String(r.seq);
+      o.state = r.state;
+      if (r.profile) o.profile = r.profile;
+      o.profile_state = r.profile_state;
       return o;
     });
+    out.findings = report.findings.map((f) => findingToJSON(f));
     if (report.signature_check) out.signature_check = report.signature_check;
     return out;
   }
 
+  function findingToJSON(f) {
+    const o = { index: f.index, line: f.line };
+    if (f.stream_id) o.stream_id = f.stream_id;
+    if (f.seq !== undefined && f.seq !== null) o.seq = String(f.seq);
+    o.class = f.class;
+    o.severity = f.severity;
+    o.message = f.message;
+    return o;
+  }
+
   return {
-    SCHEMA, HASH_PREFIX, GENESIS_HASH, SIGNATURE_ALG,
-    HASH_MISMATCH, CHAIN_BREAK, SEQ_GAP, RESTART, SIGNATURE_INVALID, SCHEMA_INVALID, NUMBER_PRECISION,
-    ERROR, NOTICE,
-    ERROR_CLASSES: [SCHEMA_INVALID, HASH_MISMATCH, CHAIN_BREAK, SEQ_GAP, SIGNATURE_INVALID],
-    NOTICE_CLASSES: [RESTART, NUMBER_PRECISION],
+    SCHEMA, HASH_PREFIX, GENESIS_HASH, SIGNATURE_ALG, MAX_SEQ,
+    SCHEMA_INVALID, HASH_MISMATCH, CHAIN_BREAK, SEQ_MISMATCH, SIGNATURE_INVALID, PROFILE_INVALID,
+    SEQ_GAP, OUTSIDE_SCOPE, PROFILE_UNKNOWN, RESTART, AFTER_UNKNOWN, LEGACY_INTEGER_SEQ, NUMBER_PRECISION,
+    ERROR, NOTICE, ERROR_CLASSES, NOTICE_CLASSES, STRICT_CLASSES: Array.from(STRICT_CLASSES),
+    VALID, INVALID, UNKNOWN, OUTSIDE, PROFILE_NONE, STATES, PROFILE_STATES,
     canonicalize, canonicalBytes, escapeString, formatNumber,
     hashBytes, keyId, computeHashes,
     parsePublicKey, verifySignature, ed25519Available, Ed25519Unavailable, cryptoAvailable,
-    decodeProblems, validateStructure, verifyRecord, verifyStream, summary, reportToJSON,
+    parseSeq, decodeProblems, validateStructure, checkRecord, verifyRecord, verifyStream, summary, reportToJSON, findingToJSON,
+    profiles, validateProfilePayload, compileProfileSchema,
     json: { memberSpans, arrayItems, scanValue, unsafeIntegers },
     bytes: { hex, fromHex, base64urlDecode },
   };

@@ -1,6 +1,7 @@
 /* Page logic for the Trail Evidence Verifier. All verification happens in
  * verify.js, in this tab; the only network requests this page ever makes are
- * the optional fetches of the two example journals that ship with the page. */
+ * the optional fetches of the two example journals that ship with the page.
+ * The profile registry comes from profiles.js, loaded with the page. */
 (function () {
   "use strict";
 
@@ -16,6 +17,13 @@
   const pubkeyInput = $("pubkey");
   const pubkeyError = $("pubkey-error");
   const requireBox = $("require-signatures");
+  const strictBox = $("strict");
+  const knownProfiles = $("known-profiles");
+  const stateCounters = $("state-counters");
+  const profileCounters = $("profile-counters");
+  const recordFilter = $("record-filter");
+  const recordsNote = $("records-note");
+  const recordsBody = document.querySelector("#records tbody");
   const verifyButton = $("verify");
   const status = $("status");
   const result = $("result");
@@ -33,6 +41,12 @@
 
   let journal = null; // { name, text }
   let running = false;
+  let lastReport = null;
+
+  const MAX_ROWS = 2000;
+  // State labels: colour is never the only cue, every badge carries text.
+  const STATE_LABEL = { valid: "valid", invalid: "invalid", unknown: "unknown", outside_scope: "outside scope", none: "none" };
+  const STATE_MARK = { valid: "\u2713", invalid: "\u2717", unknown: "?", outside_scope: "\u2013", none: "\u00b7" };
 
   // ---------------------------------------------------------------- input
 
@@ -154,6 +168,8 @@
     if (ev.key === "Enter" && !verifyButton.disabled) run();
   });
   verifyButton.addEventListener("click", run);
+  strictBox.addEventListener("change", () => { if (journal) run(); });
+  recordFilter.addEventListener("change", () => { if (lastReport) renderRecords(lastReport); });
 
   // ---------------------------------------------------------------- run
 
@@ -175,6 +191,7 @@
       const report = await te.verifyStream(journal.text, {
         publicKey: key,
         requireSignatures: !!key && requireBox.checked,
+        strict: strictBox.checked,
         onProgress: (n) => { status.textContent = `Verifying… ${n} records`; },
       });
       render(report, key !== null);
@@ -225,11 +242,22 @@
     }
 
     // Counters
+    stateCounters.replaceChildren();
+    for (const st of te.STATES) stateCounters.appendChild(stateCounter(st, report.states[st]));
+    profileCounters.replaceChildren();
+    for (const st of te.PROFILE_STATES) profileCounters.appendChild(stateCounter(st, report.profile_states[st]));
     const counts = {};
-    for (const f of report.findings) counts[f.class] = (counts[f.class] || 0) + 1;
+    const strictErrors = new Set();
+    for (const f of report.findings) {
+      counts[f.class] = (counts[f.class] || 0) + 1;
+      if (f.severity === "error" && !te.ERROR_CLASSES.includes(f.class)) strictErrors.add(f.class);
+    }
     counters.replaceChildren();
     for (const cls of te.ERROR_CLASSES) counters.appendChild(counter(cls, counts[cls] || 0, "error"));
-    for (const cls of te.NOTICE_CLASSES) counters.appendChild(counter(cls, counts[cls] || 0, "notice"));
+    for (const cls of te.NOTICE_CLASSES) counters.appendChild(counter(cls, counts[cls] || 0, strictErrors.has(cls) ? "error" : "notice"));
+
+    lastReport = report;
+    renderRecords(report);
 
     // Streams
     streamsList.replaceChildren();
@@ -256,7 +284,7 @@
         el("span", { text: f.severity }),
         el("span", { text: `line ${f.line}` }),
         el("span", { text: `record #${f.index}` }),
-        el("span", { text: f.stream_id === undefined ? "stream -" : `stream ${JSON.stringify(f.stream_id)}` }),
+        el("span", { text: f.stream_id === undefined || f.stream_id === null ? "stream -" : `stream ${JSON.stringify(f.stream_id)}` }),
         el("span", { text: f.seq === undefined || f.seq === null ? "seq -" : `seq ${f.seq}` }),
       ]);
       findingsList.appendChild(el("li", { class: f.severity }, [head, el("p", { class: "msg", text: f.message })]));
@@ -271,6 +299,47 @@
       el("span", { class: "count", text: String(n) }),
       el("span", { class: "label", text: cls }),
     ]);
+  }
+
+  function stateCounter(state, n) {
+    return el("li", { class: "state-count " + (n > 0 ? "hit " : "") + "st-" + state }, [
+      el("span", { class: "count", text: String(n) }),
+      el("span", { class: "label" }, [badgeText(state)]),
+    ]);
+  }
+
+  function badgeText(state) {
+    return `${STATE_MARK[state] || ""} ${STATE_LABEL[state] || state}`;
+  }
+
+  function badge(state) {
+    return el("span", { class: "badge st-" + state, text: badgeText(state) });
+  }
+
+  function needsAttention(r) {
+    return r.state !== "valid" || (r.profile_state !== "none" && r.profile_state !== "valid");
+  }
+
+  function renderRecords(report) {
+    const rows = recordFilter.value === "attention" ? report.results.filter(needsAttention) : report.results;
+    recordsBody.replaceChildren();
+    for (const r of rows.slice(0, MAX_ROWS)) {
+      recordsBody.appendChild(el("tr", { class: "row-" + r.state }, [
+        el("td", { text: String(r.index) }),
+        el("td", { text: String(r.line) }),
+        el("td", { class: "mono", text: r.stream_id === null || r.stream_id === undefined ? "-" : r.stream_id }),
+        el("td", { class: "mono", text: r.seq === null || r.seq === undefined ? "-" : String(r.seq) }),
+        el("td", null, [badge(r.state)]),
+        el("td", { class: "mono", text: r.profile || "-" }),
+        el("td", null, [badge(r.profile_state)]),
+      ]));
+    }
+    const notes = [];
+    if (recordFilter.value === "attention") notes.push("Records that are not valid, or whose profile failed or was not checked.");
+    if (rows.length === 0) notes.push(recordFilter.value === "attention" ? "None: every record is valid and every profile was checked." : "No records.");
+    if (rows.length > MAX_ROWS) notes.push(`Showing the first ${MAX_ROWS} of ${rows.length} rows; the JSON report below has all of them.`);
+    recordsNote.textContent = notes.join(" ");
+    recordsNote.hidden = notes.length === 0;
   }
 
   copyButton.addEventListener("click", async () => {
@@ -288,5 +357,9 @@
   if (!te.cryptoAvailable()) {
     status.textContent = "This browser offers no WebCrypto here. Open the page over https, from localhost or as a local file.";
   }
+  const ids = te.profiles();
+  knownProfiles.textContent = ids.length
+    ? `Profiles this page checks: ${ids.join(", ")}. Records with any other profile get the profile state outside_scope.`
+    : "No profile registry loaded (profiles.js is missing): every profile is reported as outside_scope.";
   currentKey();
 })();

@@ -2,7 +2,7 @@
 // Tests for web/verify.js against the shared test data. Run with Node 18+:
 //
 //   node web/test/run.mjs                 run all checks
-//   node web/test/run.mjs report <file.jsonl> [--pubkey <hex|file>] [--require-signatures]
+//   node web/test/run.mjs report <file.jsonl> [--pubkey <hex|file>] [--require-signatures] [--strict]
 //                                         print the JSON report (exit 0 ok, 1 fail, 2 usage)
 //   node web/test/run.mjs verify <file.jsonl> [...] --json
 //                                         same as report, with the CLI flags of Go and Python
@@ -34,6 +34,7 @@ const STREAMS = path.join(ROOT, "testdata", "streams");
 const EXAMPLES = path.join(ROOT, "examples");
 const TAMPERED = path.join(EXAMPLES, "tampered");
 const WEB_EXAMPLES = path.join(ROOT, "web", "examples");
+const PROFILES = path.join(ROOT, "profiles");
 
 const read = (p) => readFileSync(p, "utf8");
 
@@ -52,6 +53,7 @@ async function reportMode(args) {
   let file = null;
   let pubkey = null;
   let requireSignatures = false;
+  let strict = false;
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === "--pubkey") {
@@ -60,6 +62,8 @@ async function reportMode(args) {
       pubkey = a.slice("--pubkey=".length);
     } else if (a === "--require-signatures") {
       requireSignatures = true;
+    } else if (a === "--strict") {
+      strict = true;
     } else if (a === "--json") {
       // the report is always JSON
     } else if (a.startsWith("-")) {
@@ -68,12 +72,12 @@ async function reportMode(args) {
     } else if (file === null) {
       file = a;
     } else {
-      console.error("usage: run.mjs report <file.jsonl> [--pubkey <hex|file>] [--require-signatures]");
+      console.error("usage: run.mjs report <file.jsonl> [--pubkey <hex|file>] [--require-signatures] [--strict]");
       return 2;
     }
   }
   if (file === null) {
-    console.error("usage: run.mjs report <file.jsonl> [--pubkey <hex|file>] [--require-signatures]");
+    console.error("usage: run.mjs report <file.jsonl> [--pubkey <hex|file>] [--require-signatures] [--strict]");
     return 2;
   }
   if (requireSignatures && !pubkey) {
@@ -89,7 +93,7 @@ async function reportMode(args) {
       return 2;
     }
   }
-  const report = await te.verifyStream(read(file), { publicKey, requireSignatures });
+  const report = await te.verifyStream(read(file), { publicKey, requireSignatures, strict });
   if (report.signature_check === "unavailable") {
     console.error("Ed25519 is not available in this Node runtime; signatures were not checked");
     return 2;
@@ -121,15 +125,22 @@ async function hashMode(args) {
     console.error(err.message);
     return 2;
   }
-  const { record, findings } = await te.verifyRecord(raw);
-  const out = { payload_jcs: h.payload_jcs, content_hash: h.content_hash, core_jcs: h.core_jcs, chain_hash: h.chain_hash };
-  if (record !== null) {
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    console.error("record is not a JSON object");
+    return 2;
+  }
+  const c = await te.checkRecord(raw);
+  const out = {
+    payload_jcs: h.payload_jcs, content_hash: h.content_hash, core_jcs: h.core_jcs, chain_hash: h.chain_hash,
+    state: c.state, profile_state: c.profileState,
+  };
+  if (c.record !== null) {
     out.recorded_content_hash = parsed.content_hash;
     out.recorded_chain_hash = parsed.chain_hash;
     out.matches = parsed.content_hash === h.content_hash && parsed.chain_hash === h.chain_hash;
   }
-  if (findings.length) {
-    out.findings = findings.map((f) => ({ index: f.index, line: f.line, class: f.class, severity: f.severity, message: f.message }));
+  if (c.findings.length) {
+    out.findings = c.findings.map((f) => te.findingToJSON(f));
   }
   process.stdout.write(JSON.stringify(out, null, 2) + "\n");
   return out.matches === false ? 1 : 0;
@@ -224,8 +235,10 @@ async function testVectors() {
     eq(h.chain_hash, v.expected_chain_hash, `${v.name}: chain_hash`);
     const raw = raws.get(v.name);
     check(typeof raw === "string", `${v.name}: raw record text found`);
-    const { record, findings } = await te.verifyRecord(raw);
+    const c = await te.checkRecord(raw);
+    const { record, findings } = c;
     check(record !== null, `${v.name}: record decodes`);
+    eq([c.state, c.profileState], [v.expected_state, v.expected_profile_state], `${v.name}: state and profile state`);
     const errors = findings.filter((f) => f.severity === te.ERROR).map((f) => f.class);
     const notices = findings.filter((f) => f.severity === te.NOTICE).map((f) => f.class);
     eq(notices, v.expected_notices || [], `${v.name}: notices`);
@@ -280,17 +293,24 @@ async function checkIndex(dir) {
   for (const c of index.cases) {
     let publicKey = null;
     if (c.pubkey) publicKey = te.parsePublicKey(read(path.join(dir, c.pubkey)));
-    const report = await te.verifyStream(read(path.join(dir, c.file)), { publicKey, requireSignatures: !!c.require_signatures });
-    check(report.signature_check !== "unavailable", `${c.file}: signatures were checked`);
-    eq(report.ok, c.ok, `${c.file}: ok (${te.summary(report)})`);
-    eq(report.records, c.records, `${c.file}: records`);
-    eq(report.restarts, c.restarts, `${c.file}: restarts`);
+    const name = c.file + (c.strict ? " [strict]" : "");
+    const report = await te.verifyStream(read(path.join(dir, c.file)), { publicKey, requireSignatures: !!c.require_signatures, strict: !!c.strict });
+    check(report.signature_check !== "unavailable", `${name}: signatures were checked`);
+    eq(report.ok, c.ok, `${name}: ok (${te.summary(report)})`);
+    eq(report.ok, report.errors === 0, `${name}: ok means no error`);
+    eq(report.strict, !!c.strict, `${name}: strict`);
+    eq(report.records, c.records, `${name}: records`);
+    eq(report.restarts, c.restarts, `${name}: restarts`);
     const got = [];
     for (const f of report.findings) {
       const key = `${f.index}:${f.class}`;
       if (!got.includes(key)) got.push(key);
     }
-    eq(got, c.findings.map((f) => `${f.index}:${f.class}`), `${c.file}: distinct (index, class) findings`);
+    eq(got, c.findings.map((f) => `${f.index}:${f.class}`), `${name}: distinct (index, class) findings`);
+    eq(report.results.map((r) => r.index), [...Array(report.records).keys()], `${name}: one result per record`);
+    eq(report.results.map((r) => r.state), c.states, `${name}: states`);
+    eq(report.results.map((r) => r.profile_state), c.profile_states, `${name}: profile states`);
+    eq(te.STATES.map((s) => report.states[s]), te.STATES.map((s) => c.states.filter((x) => x === s).length), `${name}: state counts`);
   }
   return index.cases.length;
 }
@@ -302,7 +322,10 @@ async function testStreams() {
   // Summary lines must read exactly like the Go and Python CLIs.
   const pub = te.parsePublicKey(read(path.join(ROOT, "testdata", "keys", "test-ed25519.pub")));
   const lines = [
-    ["seq-gap.jsonl", {}, "FAIL: 3 record(s) in 1 stream(s), 1 error(s)"],
+    ["seq-mismatch.jsonl", {}, "FAIL: 3 record(s) in 1 stream(s), 1 error(s)"],
+    ["seq-gap.jsonl", {}, "OK: 4 record(s) in 1 stream(s), no invalid record, 1 unknown"],
+    ["seq-gap.jsonl", { strict: true }, "FAIL (strict): 4 record(s) in 1 stream(s), 1 error(s), 1 unknown"],
+    ["outside-scope.jsonl", {}, "OK: 4 record(s) in 1 stream(s), hash chain intact, 2 outside scope"],
     ["restart.jsonl", {}, "OK: 4 record(s) in 1 stream(s), hash chain intact, 1 restart(s)"],
     ["signed.jsonl", { publicKey: pub, requireSignatures: true }, "OK: 3 record(s) in 1 stream(s), hash chain intact, 3 signed record(s), 3 signature(s) verified"],
     ["signed.jsonl", {}, "OK: 3 record(s) in 1 stream(s), hash chain intact, 3 signed record(s)"],
@@ -312,7 +335,7 @@ async function testStreams() {
     eq(te.summary(await te.verifyStream(read(path.join(STREAMS, file)), opts)), want, `${file}: summary line`);
   }
   // Blank lines and CRLF line endings are tolerated, line numbers count every line.
-  const crlf = read(path.join(STREAMS, "seq-gap.jsonl")).split("\n").join("\r\n").replace(/\r\n/, "\r\n\r\n");
+  const crlf = read(path.join(STREAMS, "seq-mismatch.jsonl")).split("\n").join("\r\n").replace(/\r\n/, "\r\n\r\n");
   const rep = await te.verifyStream(crlf);
   eq([rep.records, rep.findings.map((f) => [f.index, f.line])], [3, [[2, 4]]], "CRLF journal with a blank line");
 }
@@ -337,18 +360,26 @@ async function testExamples() {
 async function testSchemaGate() {
   section("decode gate and structural checks");
   const base = JSON.parse(read(path.join(STREAMS, "valid-chain.jsonl")).split("\n")[0]);
+  // [label, mutation, record skipped by the decode gate]
   const cases = [
     ["extra top-level member", (d) => { d.extra = 1; }, true],
     ["unknown producer member", (d) => { d.producer.x = 1; }, true],
-    ["string seq", (d) => { d.seq = "0"; }, true],
-    ["float seq literal", (d) => { d.seq = "__FLOAT__"; }, true],
-    ["negative seq", (d) => { d.seq = -1; }, true],
+    ["profile not a string", (d) => { d.profile = 7; }, true],
+    ["float seq literal", (d) => { d.seq = "__FLOAT__"; }, false],
+    ["negative seq number", (d) => { d.seq = -1; }, false],
+    ["negative seq string", (d) => { d.seq = "-1"; }, false],
+    ["seq with leading zero", (d) => { d.seq = "00"; }, false],
+    ["seq beyond uint64", (d) => { d.seq = "18446744073709551616"; }, false],
+    ["boolean seq", (d) => { d.seq = true; }, false],
+    ["missing seq", (d) => { delete d.seq; }, false],
+    ["profile without major", (d) => { d.profile = "example.measurement"; }, false],
     ["unknown time.source", (d) => { d.time.source = "wall-clock"; }, false],
     ["bad event_type", (d) => { d.event_type = "Created"; }, false],
     ["upper-case hash prefix", (d) => { d.prev_hash = "SHA256:" + "0".repeat(64); }, false],
     ["recorded_at without fraction", (d) => { d.time.recorded_at = "2026-11-02T00:00:00Z"; }, false],
     ["chain_restart false", (d) => { d.chain_restart = false; }, false],
     ["null producer", (d) => { d.producer = null; }, false],
+    ["schema that is no identifier", (d) => { d.schema = "Trail Evidence"; }, false],
   ];
   for (const [label, mutate, skipped] of cases) {
     const d = JSON.parse(JSON.stringify(base));
@@ -356,9 +387,10 @@ async function testSchemaGate() {
     const raw = JSON.stringify(d).replace('"__FLOAT__"', "0.0");
     const { record, findings } = await te.verifyRecord(raw);
     check(findings.some((f) => f.class === te.SCHEMA_INVALID), `${label}: schema_invalid reported`);
+    eq(findings.filter((f) => f.class === te.SCHEMA_INVALID).length, 1, `${label}: one schema_invalid finding per record`);
     eq(record === null, skipped, `${label}: record ${skipped ? "skipped" : "kept"}`);
   }
-  for (const raw of ["[1,2]", "not json", "", "null", '{"a":1} {"b":2}']) {
+  for (const raw of ["[1,2]", "not json", "", "null", '{"a":1} {"b":2}', '{"a":NaN}']) {
     const { record, findings } = await te.verifyRecord(raw);
     check(record === null && findings[0].class === te.SCHEMA_INVALID, `non-record ${JSON.stringify(raw)} is schema_invalid`);
   }
@@ -367,6 +399,72 @@ async function testSchemaGate() {
   delete noPayload.payload;
   const r = await te.verifyRecord(JSON.stringify(noPayload));
   check(r.record !== null && r.findings.every((f) => f.class === te.SCHEMA_INVALID), "missing payload keeps the record for chain checks");
+  // seq forms: usable or not, legacy notice or not.
+  const text = JSON.stringify(base);
+  const forms = [
+    ['"0"', true, false], ['"18446744073709551615"', true, false], ['"9007199254740993"', true, false],
+    ['"\\u0037"', true, false], ["7", true, true], ["18446744073709551615", true, true],
+    ["18446744073709551616", false, false], ['"007"', false, false], ['""', false, false], ['"7.0"', false, false],
+    ["-0", false, false], ["0.0", false, false], ["1e2", false, false],
+  ];
+  for (const [lit, usable, legacy] of forms) {
+    const c = await te.checkRecord(text.replace('"seq":"0"', '"seq":' + lit));
+    const classes = c.findings.map((f) => f.class);
+    eq([!classes.includes(te.SCHEMA_INVALID), classes.includes(te.LEGACY_INTEGER_SEQ), c.seq.ok], [usable, legacy, usable], `seq ${lit}`);
+  }
+  // A record outside the scope is not checked.
+  const foreign = await te.checkRecord('{"schema":"trail.evidence/2","anything":1}');
+  eq([foreign.state, foreign.record, foreign.findings.map((f) => f.class)], [te.OUTSIDE, null, [te.OUTSIDE_SCOPE]], "foreign schema is outside_scope");
+}
+
+async function testProfiles() {
+  section("profiles/ (registry, web/profiles.js, examples, journals)");
+  const profiles = require("../profiles.js");
+  const dirs = readdirSync(PROFILES, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort();
+  const want = {};
+  for (const name of dirs) {
+    for (const f of readdirSync(path.join(PROFILES, name)).sort()) {
+      if (f.endsWith(".schema.json")) want[`${name}/${f.slice(0, -".schema.json".length)}`] = JSON.parse(read(path.join(PROFILES, name, f)));
+    }
+  }
+  check(Object.keys(want).length > 0, "registry has profiles");
+  eq(profiles, want, "web/profiles.js holds exactly the schemas in profiles/ (run scripts/profiles.py --write)");
+  eq(te.profiles(), Object.keys(want).sort(), "verify.js knows the registry");
+  let examples = 0;
+  let journals = 0;
+  for (const name of dirs) {
+    for (const f of readdirSync(path.join(PROFILES, name)).sort()) {
+      const file = path.join(PROFILES, name, f);
+      if (f.endsWith(".examples.json")) {
+        const ex = JSON.parse(read(file));
+        check(ex.valid.length > 0 && ex.invalid.length > 0, `${f}: valid and invalid examples`);
+        for (const c of ex.valid) {
+          eq(te.validateProfilePayload(ex.profile, c.payload), { known: true, problems: [] }, `${ex.profile} accepts: ${c.description}`);
+          examples++;
+        }
+        for (const c of ex.invalid) {
+          const r = te.validateProfilePayload(ex.profile, c.payload);
+          check(r.known && r.problems.length > 0, `${ex.profile} rejects: ${c.description}`);
+          examples++;
+        }
+      } else if (f.endsWith(".journal.jsonl")) {
+        const rep = await te.verifyStream(read(file), { strict: true });
+        check(rep.ok && rep.states.valid === rep.records && rep.profile_states.valid === rep.records, `${name}/${f}: ${te.summary(rep)}`);
+        journals++;
+      }
+    }
+  }
+  eq(te.validateProfilePayload("example.measurement/2", {}).known, false, "example.measurement/2 is not known");
+  for (const doc of [{ type: "object", additionalProperties: false }, { enum: [1] }, { type: "date" }, { required: "a" }, []]) {
+    let threw = false;
+    try {
+      te.compileProfileSchema(doc, "");
+    } catch (err) {
+      threw = true;
+    }
+    check(threw, `profile schema subset rejects ${JSON.stringify(doc)}`);
+  }
+  console.log(`  ${examples} example payloads and ${journals} journal(s) agree`);
 }
 
 async function main() {
@@ -384,6 +482,7 @@ async function main() {
   await testStreams();
   await testExamples();
   await testSchemaGate();
+  await testProfiles();
   if (failures) {
     console.error(`\n${failures} of ${checks} checks failed`);
     process.exit(1);

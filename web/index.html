@@ -26,10 +26,12 @@
         <p class="dropzone-title">Drop a <code>.jsonl</code> file here</p>
         <p id="dropzone-hint" class="dropzone-hint">
           or <label for="file-input" class="link-like">choose a file</label>,
-          or <a href="#" id="load-example">load the example journal</a>
+          or load <a href="#" id="load-example">the example journal</a>
+          or <a href="#" id="load-tampered">a tampered example</a>
         </p>
         <input type="file" id="file-input" accept=".jsonl,.json,.ndjson,text/plain,application/json" hidden>
         <p id="file-info" class="file-info" aria-live="polite"></p>
+        <p id="file-note" class="file-note" hidden></p>
       </div>
 
       <div class="field">

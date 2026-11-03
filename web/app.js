@@ -1,6 +1,6 @@
 /* Page logic for the Trail Evidence Verifier. All verification happens in
- * verify.js, in this tab; the only network request this page ever makes is
- * the optional "load example" fetch of a file that ships with the page. */
+ * verify.js, in this tab; the only network requests this page ever makes are
+ * the optional fetches of the two example journals that ship with the page. */
 (function () {
   "use strict";
 
@@ -11,6 +11,8 @@
   const fileInput = $("file-input");
   const fileInfo = $("file-info");
   const loadExample = $("load-example");
+  const loadTampered = $("load-tampered");
+  const fileNote = $("file-note");
   const pubkeyInput = $("pubkey");
   const pubkeyError = $("pubkey-error");
   const requireBox = $("require-signatures");
@@ -34,10 +36,12 @@
 
   // ---------------------------------------------------------------- input
 
-  function setJournal(name, text) {
+  function setJournal(name, text, note) {
     journal = { name, text };
     const lines = text.split("\n").filter((l) => l.trim() !== "").length;
     fileInfo.textContent = `${name} · ${formatBytes(text.length)} · ${lines} non-empty line(s)`;
+    fileNote.textContent = note || "";
+    fileNote.hidden = !note;
     verifyButton.disabled = false;
     status.textContent = "";
     run();
@@ -96,19 +100,31 @@
   window.addEventListener("dragover", (ev) => ev.preventDefault());
   window.addEventListener("drop", (ev) => ev.preventDefault());
 
-  loadExample.addEventListener("click", async (ev) => {
-    ev.preventDefault();
-    const name = "examples/transfer-worker.jsonl";
+  // Both bundled journals ship with the page under examples/.
+  async function loadBundled(name, note) {
     status.textContent = "Loading example…";
     try {
       const res = await fetch(name, { cache: "no-cache" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setJournal(name, await res.text());
+      setJournal(name, await res.text(), note);
     } catch (err) {
       status.textContent = window.location.protocol === "file:"
-        ? "The example cannot be fetched from a file:// page; drop examples/transfer-worker.jsonl from the repository instead."
+        ? `The example cannot be fetched from a file:// page; drop ${name} from the repository instead.`
         : `Could not load the example: ${err.message}`;
     }
+  }
+
+  loadExample.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    loadBundled("examples/transfer-worker.jsonl",
+      "Four transfer job results from one worker, chained and unchanged. Record #2 is a failed job.");
+  });
+
+  loadTampered.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    loadBundled("examples/tampered/hash-mismatch.jsonl",
+      "The same journal after someone edited record #2 to turn the failed job into a successful one, " +
+      "without recomputing its hashes. The repository has one tampered copy per error class in examples/tampered/.");
   });
 
   // ---------------------------------------------------------------- key

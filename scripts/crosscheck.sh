@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Cross-check: the Go reference implementation generates the vectors, Python
 # and the browser verifier (web/verify.js, run with Node) must reproduce every
-# hash byte for byte, and all three verifiers must agree on every stream
-# fixture and example journal.
+# hash byte for byte, all three verifiers must agree on every stream fixture
+# and example journal, and each must pass scripts/conformance.sh.
 #
 # Usage: scripts/crosscheck.sh            (picks the newest python3 >= 3.9)
 #        PYTHON=python3.12 NODE=node scripts/crosscheck.sh
@@ -101,4 +101,9 @@ if [ "$mismatch" -ne 0 ]; then
   echo "FAIL: the verifiers disagree" >&2
   exit 1
 fi
+
+echo "== 5. Each verifier passes the conformance suite (scripts/conformance.sh)"
+PYTHON="$PY" scripts/conformance.sh "$GOBIN" | tail -n 1
+PYTHONPATH=python PYTHON="$PY" scripts/conformance.sh "$PY" -m trail_evidence | tail -n 1
+PYTHON="$PY" scripts/conformance.sh "$NODE" web/test/run.mjs | tail -n 1
 echo "== crosscheck passed"

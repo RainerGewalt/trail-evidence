@@ -114,13 +114,12 @@ jobs:
     # Trusted publishing: PyPI accepts the upload because this workflow
     # (release.yml) in this repository, running in the environment "pypi",
     # presents a GitHub OIDC token. Set up once on pypi.org as a "pending
-    # publisher" for the project trail-evidence (docs/RELEASING.md). Until
-    # then the upload fails; continue-on-error keeps the release green and the
-    # last step says what to do.
+    # publisher" for the project trail-evidence (docs/RELEASING.md; set up on
+    # 2026-11-03, first upload 0.2.0). A failed upload fails this job, so a
+    # green release always means the package is on PyPI.
     name: Publish to PyPI (trusted publishing)
     needs: [python-dist]
     runs-on: ubuntu-latest
-    continue-on-error: true
     environment:
       name: pypi
       url: https://pypi.org/project/trail-evidence/
@@ -134,7 +133,6 @@ jobs:
           path: dist/
       - name: Upload to PyPI
         id: upload
-        continue-on-error: true
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/

@@ -1,7 +1,7 @@
 # trail-evidence
 
-**Status: v0.2 draft (unreleased; the latest release, v0.1.0, implements
-format 0.1). The format may still change before 1.0.**
+**Status: v0.2.0, released 2026-11-03. The format may still change before
+1.0; changes are listed in [CHANGELOG.md](CHANGELOG.md).**
 
 A Trail Evidence Record is one JSON object that describes one event a system
 wants to be able to prove later, chained to the previous record by a hash
@@ -17,11 +17,14 @@ records. One record shape means one verifier for all of them.
 `producer.kind` says where a record came from, `event_type` what happened,
 `payload` carries the domain data unchanged, and `profile` names the schema
 of that payload, which the producer defines and registers in
-[`profiles/`](profiles/README.md). Producers this contract is
-written for: `transfer-worker` (TrailTransfer), `source-bridge`
-(TrailSource), `broker` (TrailMQ, via an export adapter), `ml-pipeline`,
-`persistence`, `other`. None of them emits this format yet; `SPEC.md`
-section 8 describes the intended mapping for each.
+[`profiles/`](profiles/README.md). Producer kinds: `transfer-worker`, `source-bridge`, `broker`,
+`ml-pipeline`, `persistence`, `other`. Two producers emit this format
+today: [TrailTransfer](https://github.com/RainerGewalt/trailtransfer)
+0.1.0 writes its job journal as `trail.evidence/1` (still with the integer
+`seq` of format 0.1, which 0.x verifiers accept with a notice), and
+[TrailSource](https://github.com/RainerGewalt/trailsource) writes format
+0.2 on its main branch, ahead of its first tagged release. TrailMQ does not
+emit it today. `SPEC.md` section 8 describes the mapping for each kind.
 
 ## Try in the browser
 
@@ -51,9 +54,7 @@ to `main` that touches it. Locally: `python3 -m http.server -d web`.
 
 ## Install
 
-Three ways, all with the same verifier. The commands name `v0.2.0`, which
-is not tagged yet; until it is, `go install …@main` and the pip line from
-Git give you format 0.2, while the `v0.1.0` release implements format 0.1.
+Three ways, all with the same verifier and the same results.
 
 **Prebuilt binary.** Each release carries archives for Linux, macOS and
 Windows on amd64 and arm64, each with the binary, `LICENSE` and `SPEC.md`,
@@ -84,7 +85,7 @@ go install github.com/RainerGewalt/trail-evidence/go/cmd/trail-evidence@latest
 
 ```bash
 pip install trail-evidence
-# for an unreleased state, such as format 0.2 before its tag:
+# the development state on main:
 pip install "git+https://github.com/RainerGewalt/trail-evidence#subdirectory=python"
 ```
 

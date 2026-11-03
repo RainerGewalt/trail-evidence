@@ -81,13 +81,14 @@ reserve the name: until the first upload, another account could register a
 project called `trail-evidence`, so the setup is best done shortly before
 the first release that is to reach PyPI.
 
-### Without the setup
+### Status and fallback
 
-Until the pending publisher exists, the upload step fails, the job prints a
-warning ("PyPI upload skipped") with these instructions, and the release is
-still green: binaries, checksums, the Go module tag and the Python artifact
-are unaffected (`continue-on-error` on the step and the job). After the
-setup, re-run the job `pypi` of that workflow run, or upload by hand:
+The publisher was registered on 2026-11-03; 0.2.0 was the first upload. A
+failed upload now fails the release job, so a green release run means the
+package is on PyPI. If an upload fails, fix the cause and re-run only the
+PyPI job; the GitHub release, the binaries and the Go module tag are not
+affected by a re-run. Manual fallback, only if trusted publishing is
+unavailable:
 
 ```bash
 gh run download --repo RainerGewalt/trail-evidence -n python-dist-vX.Y.Z -D dist-py

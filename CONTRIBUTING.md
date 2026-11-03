@@ -30,12 +30,18 @@ come with a few rules.
    cd go && gofmt -l . && go vet ./... && go test ./... && cd ..
    cd python && python3 -m unittest discover -s tests && cd ..
    node web/test/run.mjs
-   scripts/crosscheck.sh
-   scripts/validate_schema.py --vectors testdata/vectors.json examples/*.jsonl
+   scripts/crosscheck.sh            # includes scripts/conformance.sh for all three
+   scripts/validate_schema.py --vectors testdata/vectors.json examples/*.jsonl examples/tampered/*.jsonl
+   scripts/reason_codes.py --check
    ```
 5. Commit with a conventional subject: `type(scope): subject`, for example
    `fix(python): reject padded base64url signatures`. Scopes in use: `spec`,
-   `schema`, `go`, `python`, `web`, `vectors`, `examples`, `ci`, `docs`.
+   `schema`, `go`, `python`, `web`, `vectors`, `examples`, `action`, `ci`,
+   `release`, `docs`.
+
+New reason codes go into `schema/reason-codes.json`; run
+`scripts/reason_codes.py --write` to regenerate the tables in
+`docs/REASON_CODES.md`. A code keeps its meaning once it is in the catalog.
 
 ## Requirements
 

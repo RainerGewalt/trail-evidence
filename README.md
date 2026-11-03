@@ -4,92 +4,120 @@
 
 A Trail Evidence Record is one JSON object that describes one event a system
 wants to be able to prove later, chained to the previous record by a hash
-and optionally signed. This repository is the shared contract for that
-record: the specification, a JSON Schema, test vectors, and reference
-implementations in Go and Python that reproduce each other byte for byte.
+and optionally signed. A journal is a JSON Lines file of such records. This
+repository is the shared contract for that record: the specification, a JSON
+Schema, test vectors, and verifiers in Go, Python and JavaScript that
+reproduce each other byte for byte.
 
-## Why one contract
+The systems around the Trail ecosystem each keep some kind of evidence: a
+transfer worker writes a job journal, a source bridge emits envelopes with
+an audit block, a broker logs access decisions, an ML pipeline stores run
+records. One record shape means one verifier for all of them.
+`producer.kind` says where a record came from, `event_type` what happened,
+`payload` carries the domain data unchanged. Producers this contract is
+written for: `transfer-worker` (TrailTransfer), `source-bridge`
+(TrailSource), `broker` (TrailMQ, via an export adapter), `ml-pipeline`,
+`persistence`, `other`. None of them emits this format yet; `SPEC.md`
+section 8 describes the intended mapping for each.
 
-The systems around the Trail ecosystem each keep some kind of evidence:
-a transfer worker writes a hash-chained job journal, a source bridge emits
-envelopes with an audit block, a broker logs access decisions, an ML
-pipeline stores run records with recipe and data fingerprints. Today each
-one has its own field names, its own hash encoding and its own idea of
-canonical JSON. Four formats mean four verifiers, four mappings in every
-downstream tool and four ways to be subtly incompatible.
-
-A single record shape removes that. Whatever produced the record, one
-verifier recomputes the hashes, follows the chain, checks the signature and
-says what it found. `producer.kind` says where the record came from;
-`event_type` says what happened; `payload` carries the domain data
-unchanged.
-
-Producers that this contract is written for: `transfer-worker`
-(TrailTransfer), `source-bridge` (TrailSource), `broker` (TrailMQ, via an
-export adapter), `ml-pipeline`, `persistence`, and `other`. None of them
-emits this format yet; the mapping notes in `SPEC.md` describe the intended
-migration for each.
-
-## 60-second example
-
-```bash
-git clone https://github.com/RainerGewalt/trail-evidence
-cd trail-evidence/go && go build -o ../trail-evidence ./cmd/trail-evidence && cd ..
-
-./trail-evidence verify examples/transfer-worker.jsonl
-# OK: 4 record(s) in 1 stream(s), hash chain intact
-
-./trail-evidence verify testdata/streams/seq-gap.jsonl
-# FAIL: 3 record(s) in 1 stream(s), 1 error(s)
-#   error   seq_gap           record #2 (line 3, stream "s", seq 3): seq 3, expected 2
-
-./trail-evidence verify testdata/streams/signed.jsonl \
-    --pubkey testdata/keys/test-ed25519.pub --require-signatures
-# OK: 3 record(s) in 1 stream(s), hash chain intact, 3 signed record(s), 3 signature(s) verified
-```
-
-The same with Python (3.9 or newer, standard library only):
-
-```bash
-cd python && python3 -m trail_evidence verify ../examples/transfer-worker.jsonl
-```
-
-Or without installing anything: see [Verify in the browser](#verify-in-the-browser).
-
-A journal is JSON Lines: one record per line. The verifier needs nothing but
-the file, and a public key if you want signatures checked.
-
-## Verify in the browser
-
-`web/` is a static page that verifies a journal in the browser. Drop a
-`.jsonl` file on it, optionally paste the producer's Ed25519 public key (hex,
-base64url or PEM), and read the verdict, the counts per finding class, the
-findings with line, stream and `seq`, and the last `chain_hash` of every
-stream. Nothing is uploaded: the page is plain HTML, CSS and JavaScript
-without a build step or external scripts, hashing uses the browser's
-WebCrypto, and the only request it makes is for the bundled example journal.
-
-Once GitHub Pages is enabled for this repository (Settings, Pages, Source:
-"GitHub Actions"), `.github/workflows/pages.yml` publishes `web/` on every
-push to `main` that touches it, at
+## Try in the browser
 
 ```
 https://rainergewalt.github.io/trail-evidence/
 ```
 
-Until then, open `web/index.html` from a local checkout or serve the
-directory with any static file server (`python3 -m http.server -d web`).
+Drop a `.jsonl` journal on the page, optionally paste the producer's
+Ed25519 public key (hex, base64url or PEM), and read the verdict, the
+findings with line, stream and `seq`, and the last `chain_hash` of every
+stream. "Load the example journal" shows a passing journal; "load a tampered
+example" shows the same journal after one record was edited.
 
-The page uses the same algorithm as Go and Python: `web/verify.js`
-implements RFC 8785, the hashing, the chain and signature checks, and
-`node web/test/run.mjs` (Node 18 or newer) checks it against
-`testdata/vectors.json`, `testdata/streams/expected.json` and the examples;
-`scripts/crosscheck.sh` compares all three verifiers on every fixture.
-Signature checks need Ed25519 in the browser's WebCrypto (current Chrome,
-Firefox and Safari); where that is missing, the page reports signatures as
-not checked rather than as failed.
+Nothing is uploaded. The page is plain HTML, CSS and JavaScript without a
+build step or external scripts, hashing uses the browser's WebCrypto, and
+the only requests it makes are for the two bundled example journals.
+Signature checks need Ed25519 in WebCrypto (current Chrome, Firefox and
+Safari); where it is missing, signatures are reported as not checked rather
+than as failed.
 
-## The record
+The page is published from `web/` by `.github/workflows/pages.yml` once
+GitHub Pages is enabled for the repository (Settings, Pages, Source: "GitHub
+Actions"). Locally: `python3 -m http.server -d web`.
+
+## Install
+
+Three ways, all with the same verifier. Releases start with `v0.1.0`; until
+that tag exists, use `go install …@latest` or the pip line from Git.
+
+**Prebuilt binary.** Each release carries archives for Linux, macOS and
+Windows on amd64 and arm64, each with the binary, `LICENSE` and `SPEC.md`,
+plus `checksums.txt`:
+
+```bash
+V=0.1.0
+curl -LO https://github.com/RainerGewalt/trail-evidence/releases/download/v$V/trail-evidence_${V}_linux_amd64.tar.gz
+curl -LO https://github.com/RainerGewalt/trail-evidence/releases/download/v$V/checksums.txt
+sha256sum --ignore-missing -c checksums.txt
+tar -xzf trail-evidence_${V}_linux_amd64.tar.gz trail-evidence
+./trail-evidence version
+```
+
+Other targets: replace `linux_amd64` with `linux_arm64`, `darwin_amd64`,
+`darwin_arm64`, `windows_amd64` or `windows_arm64` (Windows archives are
+`.zip`). The binaries are not code-signed; macOS may need
+`xattr -d com.apple.quarantine trail-evidence` after a browser download.
+
+**Go** (1.22 or newer). The module lives in the subdirectory `go/`:
+
+```bash
+go install github.com/RainerGewalt/trail-evidence/go/cmd/trail-evidence@latest
+```
+
+**Python** (3.9 or newer, no dependencies). The command is
+`trail-evidence-py`, so that it does not shadow the Go binary:
+
+```bash
+pip install trail-evidence
+# before the first PyPI upload, or for an unreleased state:
+pip install "git+https://github.com/RainerGewalt/trail-evidence#subdirectory=python"
+```
+
+From a checkout, without installing: `cd go && go run ./cmd/trail-evidence …`
+or `cd python && python3 -m trail_evidence …`.
+
+## Verify a journal
+
+```bash
+trail-evidence verify examples/transfer-worker.jsonl
+# OK: 4 record(s) in 1 stream(s), hash chain intact
+
+trail-evidence verify examples/tampered/seq-gap.jsonl
+# FAIL: 3 record(s) in 1 stream(s), 1 error(s)
+#   error   seq_gap           record #2 (line 3, stream "worker-01", seq 3): seq 3, expected 2
+
+trail-evidence verify testdata/streams/signed.jsonl \
+    --pubkey testdata/keys/test-ed25519.pub --require-signatures
+# OK: 3 record(s) in 1 stream(s), hash chain intact, 3 signed record(s), 3 signature(s) verified
+```
+
+`--json` prints the full report. Exit codes: 0 verified, 1 at least one
+finding with severity error, 2 usage or I/O error. `trail-evidence hash
+record.json` recomputes the hashes of a single record and prints the
+canonical forms. `trail-evidence-py` takes the same arguments.
+
+`verify` recomputes every hash and follows every link. A passing run means
+no record in the file was altered, removed or reordered relative to the
+others. It does not mean the payloads are true, that the clock was right
+(`time.source` says what the producer knew about that), or that nobody
+rewrote the whole file: for that you need signatures (`--pubkey`) or an
+external anchor of the latest `chain_hash`. `SPEC.md` section 6.3 lists these
+limits.
+
+[`examples/tampered/`](examples/tampered/README.md) has one manipulated
+journal per error class (`hash_mismatch`, `chain_break`, `seq_gap`,
+`signature_invalid`) with the output to expect, including the case where a
+rewritten journal passes without a key and fails with one.
+
+## Produce records
 
 ```json
 {
@@ -131,48 +159,21 @@ not checked rather than as failed.
 
 Hashing: everything is SHA-256 over RFC 8785 (JCS) bytes, written as
 `sha256:` plus 64 lowercase hex characters. Genesis `prev_hash` is 64
-zeros. The full rules, the verification algorithm and the finding classes
-(`hash_mismatch`, `chain_break`, `seq_gap`, `signature_invalid`,
-`schema_invalid`, plus the notices `restart` and `number_precision`) are
-in [SPEC.md](SPEC.md).
+zeros. The finding classes a verifier reports (`hash_mismatch`,
+`chain_break`, `seq_gap`, `signature_invalid`, `schema_invalid`, and the
+notices `restart` and `number_precision`) are defined in `SPEC.md`.
 
 Numbers in `payload`: JCS applies ES6 number semantics, so every number is
 an IEEE-754 double. Integers outside ±2^53 must be sent as strings, and
-floats whose exact decimal form matters should be. The vector
-`jcs-edge-cases` in `testdata/vectors.json` shows what happens otherwise:
+floats whose exact decimal form matters should be. Otherwise
 `9007199254740993` canonicalises to `9007199254740992`, and `verify`
-reports a `number_precision` notice for the record. The hashes stay well
-defined; the value you meant is gone.
+reports a `number_precision` notice for the record.
 
-## What verification tells you
-
-`verify` recomputes every hash and follows every link. A passing run means
-no record in the file was altered, removed or reordered relative to the
-others. It does not mean the payloads are true, that the clock was right
-(`time.source` tells you what the producer knew about that), or that nobody
-rewrote the whole file: for that you need signatures (`--pubkey`) or an
-external anchor of the latest `chain_hash`. The spec lists these limits
-explicitly.
-
-## Repository layout
-
-```
-SPEC.md                         normative specification
-schema/trail-evidence-1.schema.json   JSON Schema 2020-12
-go/                             Go module github.com/RainerGewalt/trail-evidence/go
-  evidence/                       package: Seal, Sign, VerifyRecord, VerifyStream
-  cmd/trail-evidence/             CLI: verify, hash, vectors
-python/trail_evidence/          Python package: seal, sign, verify_record, verify_stream
-web/                            browser verifier (static page, GitHub Pages); verify.js + test/run.mjs
-testdata/vectors.json           canonicalisation and hashing vectors (generated by Go)
-testdata/streams/               journals with the findings a verifier must report
-testdata/keys/                  the public TEST key used by signed vectors
-examples/                       one verifiable journal per producer kind
-scripts/crosscheck.sh           Go output must be reproduced by Python and JavaScript, verifiers must agree
-scripts/validate_schema.py      JSON Schema validation of journals
-```
-
-## Using the libraries
+Reason codes: when a record explains an outcome (why a job failed, why a
+publish was denied), put a code from
+[`docs/REASON_CODES.md`](docs/REASON_CODES.md) into `payload.reason_code`,
+for example `transfer.policy_violation` or `mqtt.no_matching_grant`. The
+catalog is documentation; verifiers do not check it.
 
 Go:
 
@@ -208,7 +209,7 @@ record = {
     "time": {"recorded_at": "2026-11-02T09:42:10.000Z", "source": "system"},
     "actor": {"auth": "operator-token", "id": "ml-ops"},
     "policy": NO_POLICY,
-    "payload": {"metrics": {"dice": "0.9132"}},
+    "payload": {"metrics": {"dice": "0.9132"}, "reason_code": "ml.metrics_accepted"},
 }
 seal(record, GENESIS_HASH)
 sign(record, seed_bytes)            # optional
@@ -217,22 +218,152 @@ with open("journal.jsonl") as fh:
 print(report.summary())
 ```
 
-## Development
+`examples/` has one verifiable journal per producer kind.
+
+## GitHub Action
+
+Verify journals in CI. The step fails when any journal has a finding with
+severity error.
+
+```yaml
+- uses: RainerGewalt/trail-evidence@v0.1.0
+  with:
+    journal: evidence/*.jsonl
+```
+
+With signatures and the outputs:
+
+```yaml
+- id: evidence
+  uses: RainerGewalt/trail-evidence@v0.1.0
+  with:
+    journal: evidence/**/*.jsonl
+    pubkey: keys/producer.pub
+    require-signatures: true
+- run: echo "${{ steps.evidence.outputs.records }} records, verdict ${{ steps.evidence.outputs.verdict }}"
+```
+
+| Input | Default | Meaning |
+|---|---|---|
+| `journal` | required | Path or glob, relative to the workspace; several patterns separated by spaces. `**` needs bash 4 or newer on the runner. |
+| `pubkey` | empty | Ed25519 public key as 64 hex characters, or a path to a hex or PEM file. Without it signatures are counted, not checked. |
+| `require-signatures` | `false` | Treat unsigned records as `signature_invalid`. Needs `pubkey`. |
+| `version` | the action's ref | Verifier version to install, e.g. `v0.1.0`. |
+
+| Output | Meaning |
+|---|---|
+| `verdict` | `ok` or `fail` over all journals |
+| `records` | number of records over all journals |
+| `errors` | number of findings with severity error over all journals |
+
+The action installs the verifier that matches its own tag with
+`go install github.com/RainerGewalt/trail-evidence/go/cmd/trail-evidence@<tag>`
+and falls back to the release archive, checked against `checksums.txt`.
+Referenced by branch, commit or as `uses: ./`, it builds the verifier from
+its own checkout. It writes a table with one row per journal to the job
+summary and an annotation per error finding. It needs `jq`, which GitHub-hosted runners
+have; `.github/workflows/self-test.yml` runs it on Linux, macOS and Windows.
+To read the outputs of a failing run, set `continue-on-error: true` on the
+step.
+
+## For producers
+
+A project whose producer writes `trail.evidence/1` can say so with a badge:
+
+```markdown
+[![evidence: trail.evidence/1](https://img.shields.io/badge/evidence-trail.evidence%2F1-blue)](https://github.com/RainerGewalt/trail-evidence)
+```
+
+A project may show it when its producer reproduces every vector in
+`testdata/vectors.json` byte for byte (producer conformance, see below). It
+must also have checked a journal written by that producer with the
+reference verifier (`trail-evidence verify`, no errors) at the format
+version the badge names. The badge states format compatibility, not that
+the recorded events are true.
+
+Worth doing beyond that: put `payload.reason_code` on refused, failed and
+degraded outcomes; sign records and publish the public key; run the GitHub
+Action on journals your tests produce.
+
+## Conformance
+
+`SPEC.md` section 10 makes the test data the conformance criterion. A
+producer conforms when it reproduces every vector in `testdata/vectors.json`
+byte for byte. A verifier conforms when it does that, reports the expected
+notices and errors per vector, and reports exactly the findings listed in
+`testdata/streams/expected.json` for every fixture. Two cases are mandatory
+by name: the integer 2^53+1 (canonicalises to `9007199254740992`, notice
+`number_precision`) and member sorting by UTF-16 code units (U+1F680 before
+U+FF01).
+
+To check another implementation, give `scripts/conformance.sh` the command
+that runs it:
+
+```bash
+scripts/conformance.sh /path/to/your-verifier
+# ok   genesis-minimal
+# …
+# ok   jcs-edge-cases  [mandatory: integer 2^53+1 -> 9007199254740992 with number_precision notice; member order by UTF-16 code units]
+# …
+# conformant: 10 vectors and 11 stream fixtures of trail.evidence/1 (suite v0.1.0)
+```
+
+The command must offer `hash <record.json>` (prints `payload_jcs`,
+`content_hash`, `core_jcs`, `chain_hash` and, if the record has findings on
+its own, `findings` with `class` and `severity`) and `verify <journal.jsonl>
+[--pubkey <file>] [--require-signatures] --json` (prints `ok`, `records`,
+`restarts` and `findings` with `index` and `class`; exit 0 when ok, 1 when
+not), like the reference CLI. The script needs only `python3`. The Go,
+Python and JavaScript implementations in this repository pass it in CI.
+
+## Spec
+
+- [`SPEC.md`](SPEC.md): the normative specification, including the
+  verification algorithm, its limits and conformance.
+- [`schema/trail-evidence-1.schema.json`](schema/trail-evidence-1.schema.json):
+  JSON Schema 2020-12 for the record.
+- [`docs/REASON_CODES.md`](docs/REASON_CODES.md) and
+  [`schema/reason-codes.json`](schema/reason-codes.json): the reason code
+  catalog, with its own schema.
+- [`docs/RELEASING.md`](docs/RELEASING.md): how a release is cut.
+
+```
+SPEC.md                         normative specification
+schema/                         record schema; reason code catalog and its schema
+docs/                           reason code catalog, release procedure
+go/                             Go module github.com/RainerGewalt/trail-evidence/go
+  evidence/                       package: Seal, Sign, VerifyRecord, VerifyStream
+  cmd/trail-evidence/             CLI: verify, hash, vectors, version
+python/trail_evidence/          Python package and CLI (trail-evidence-py)
+web/                            browser verifier (static page); verify.js + test/run.mjs
+action.yml                      GitHub Action (composite)
+testdata/vectors.json           canonicalisation and hashing vectors (generated by Go)
+testdata/streams/               journals with the findings a verifier must report
+testdata/keys/                  the public TEST key used by signed vectors
+examples/                       one verifiable journal per producer kind
+examples/tampered/              one manipulated journal per error class
+scripts/crosscheck.sh           Go, Python and JavaScript must agree byte for byte
+scripts/conformance.sh          run any verifier against the conformance suite
+scripts/validate_schema.py      JSON Schema validation of journals
+scripts/reason_codes.py         check the reason code catalog, regenerate its tables
+```
+
+Development:
 
 ```bash
 cd go && go build ./... && go test ./... && cd ..
 cd python && python3 -m unittest discover -s tests && cd ..
 node web/test/run.mjs
 scripts/crosscheck.sh
-scripts/validate_schema.py --vectors testdata/vectors.json examples/*.jsonl
+scripts/validate_schema.py --vectors testdata/vectors.json examples/*.jsonl examples/tampered/*.jsonl
+scripts/reason_codes.py --check
 ```
 
 Vectors, fixtures and examples are generated: edit
 `go/internal/vectors/vectors.go`, run `cd go && go run ./internal/gentestdata
 -root ..`, and commit the result. `go test` fails when the committed files
-are out of date.
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) and [CHANGELOG.md](CHANGELOG.md).
+are out of date. See [CONTRIBUTING.md](CONTRIBUTING.md) and
+[CHANGELOG.md](CHANGELOG.md).
 
 ## License
 

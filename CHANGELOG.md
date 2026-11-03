@@ -8,6 +8,39 @@ tagged. Until then the record format is a draft and may change.
 
 ### Added
 
+- Prebuilt binaries: `.goreleaser.yaml` builds `trail-evidence` for Linux,
+  macOS and Windows on amd64 and arm64, archives with `LICENSE` and
+  `SPEC.md`, and `checksums.txt`. `.github/workflows/release.yml` runs on
+  tags `v*`: Go tests, GoReleaser, the Go module tag `go/v*` for
+  `go install`, and the Python sdist and wheel as a workflow artifact.
+  `docs/RELEASING.md` describes the steps, including the manual PyPI upload.
+- `python/pyproject.toml` for the PyPI package `trail-evidence` 0.1.0
+  (Apache-2.0, no dependencies, console script `trail-evidence-py`); CI builds
+  the sdist and wheel and runs the installed script on every push.
+- GitHub Action (`action.yml`, composite): inputs `journal`, `pubkey`,
+  `require-signatures`, `version`; outputs `verdict`, `records`, `errors`;
+  job summary and annotations per error finding.
+  `.github/workflows/self-test.yml` runs it from the checkout on Linux, macOS
+  and Windows against the examples and fixtures.
+- Reason code catalog: `docs/REASON_CODES.md` and `schema/reason-codes.json`
+  with 36 codes for `payload.reason_code` in the namespaces `transfer`,
+  `mqtt`, `source`, `ml` and `common`, each with severity, meaning and
+  example; `schema/reason-codes.schema.json` and `scripts/reason_codes.py`
+  check the catalog. Documentation only; verifiers do not check reason codes.
+- `SPEC.md` section 10, Conformance: producer and verifier conformance
+  defined by `testdata/vectors.json` and `testdata/streams/expected.json`,
+  with the integer 2^53+1 and UTF-16 member order as named mandatory cases.
+  `scripts/conformance.sh <command>` runs any verifier with the reference CLI
+  interface against the suite; the crosscheck runs it for Go, Python and
+  JavaScript. `web/test/run.mjs` gained `verify` and `hash` modes for this.
+- `examples/tampered/`: one manipulated copy of the transfer-worker journal
+  per error class (`hash_mismatch`, `chain_break`, `seq_gap`,
+  `signature_invalid`) with `expected.json`, checked by the Go, Python and
+  JavaScript tests and the crosscheck. The browser verifier offers "load a
+  tampered example".
+- README sections Install, GitHub Action, For producers (badge) and
+  Conformance.
+
 - `SPEC.md`: Trail Evidence Record v1 draft with canonicalisation (RFC 8785),
   hashing, chaining, restart, signature and verification rules, and the
   finding classes `hash_mismatch`, `chain_break`, `seq_gap`, `restart`,
@@ -33,3 +66,12 @@ tagged. Until then the record format is a draft and may change.
   stream fixtures and examples, and `scripts/crosscheck.sh` compares it with
   Go and Python. `.github/workflows/pages.yml` publishes `web/` to GitHub
   Pages.
+
+### Changed
+
+- `trail-evidence version` reports the release version set at build time,
+  or the module version for `go install` builds, instead of a fixed string.
+- Python package version `0.1.0` (was `0.1.0.dev0`).
+- Example journals use catalog reason codes: `mqtt.rule_match`,
+  `mqtt.no_matching_grant`, and `transfer.source_not_found` on the failed
+  transfer job. Their hashes changed accordingly; the vectors did not.

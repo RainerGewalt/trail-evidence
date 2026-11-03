@@ -24,8 +24,8 @@ const (
 	ClassProfileInvalid   = "profile_invalid"
 
 	// Notices. seq_gap makes the record unknown; outside_scope marks a
-	// record that is not checked. With Options.Strict, seq_gap,
-	// outside_scope and profile_unknown are reported with severity error.
+	// record that is not checked. Both make the journal incomplete;
+	// profile_unknown does so only with Options.RequireKnownProfiles.
 	ClassSeqGap           = "seq_gap"
 	ClassOutsideScope     = "outside_scope"
 	ClassProfileUnknown   = "profile_unknown"
@@ -44,7 +44,7 @@ const (
 )
 
 // Record states (SPEC.md section 6.1). A record's state depends on the
-// record and its stream, never on Options.Strict.
+// record and its stream, never on the Options.
 const (
 	StateValid        = "valid"
 	StateInvalid      = "invalid"
@@ -59,8 +59,20 @@ const ProfileNone = "none"
 // errorClasses put a record into state invalid.
 var errorClasses = enum(ClassSchemaInvalid, ClassHashMismatch, ClassChainBreak, ClassSeqMismatch, ClassSignatureInvalid, ClassProfileInvalid)
 
-// strictClasses are notices that strict verification reports as errors.
-var strictClasses = enum(ClassSeqGap, ClassOutsideScope, ClassProfileUnknown)
+// Journal verdicts (SPEC.md section 6.4).
+const (
+	VerdictValid      = "valid"
+	VerdictInvalid    = "invalid"
+	VerdictIncomplete = "incomplete"
+)
+
+// Exit codes of the verify command for each outcome.
+const (
+	ExitValid      = 0 // verdict valid, or incomplete and allowed
+	ExitInvalid    = 1 // verdict invalid
+	ExitUsage      = 2 // usage or I/O error
+	ExitIncomplete = 3 // verdict incomplete and not allowed
+)
 
 // Finding is one observation about one record. Seq is the record's seq when
 // it is usable; it is encoded as a decimal string.
@@ -112,22 +124,25 @@ type RecordResult struct {
 	ProfileState string  `json:"profile_state"`
 }
 
-// Report is the outcome of VerifyStream.
+// Report is the outcome of VerifyStream. Verdict describes the journal; OK
+// says whether it passes under the options it was verified with.
 type Report struct {
-	OK                 bool               `json:"ok"`
-	Strict             bool               `json:"strict"`
-	Records            int                `json:"records"`
-	Errors             int                `json:"errors"`
-	Restarts           int                `json:"restarts"`
-	SignedRecords      int                `json:"signed_records"`
-	SignaturesVerified int                `json:"signatures_verified"`
-	UnsignedRecords    int                `json:"unsigned_records"`
-	Notices            int                `json:"notices"`
-	States             StateCounts        `json:"states"`
-	ProfileStates      ProfileStateCounts `json:"profile_states"`
-	Streams            []StreamSummary    `json:"streams"`
-	Results            []RecordResult     `json:"results"`
-	Findings           []Finding          `json:"findings"`
+	OK                   bool               `json:"ok"`
+	Verdict              string             `json:"verdict"`
+	AllowIncomplete      bool               `json:"allow_incomplete"`
+	RequireKnownProfiles bool               `json:"require_known_profiles"`
+	Records              int                `json:"records"`
+	Errors               int                `json:"errors"`
+	Restarts             int                `json:"restarts"`
+	SignedRecords        int                `json:"signed_records"`
+	SignaturesVerified   int                `json:"signatures_verified"`
+	UnsignedRecords      int                `json:"unsigned_records"`
+	Notices              int                `json:"notices"`
+	States               StateCounts        `json:"states"`
+	ProfileStates        ProfileStateCounts `json:"profile_states"`
+	Streams              []StreamSummary    `json:"streams"`
+	Results              []RecordResult     `json:"results"`
+	Findings             []Finding          `json:"findings"`
 }
 
 // Options control VerifyStream.
@@ -137,38 +152,67 @@ type Options struct {
 	// RequireSignatures reports an unsigned record as signature_invalid.
 	// It only has an effect together with PublicKey.
 	RequireSignatures bool
-	// Strict reports seq_gap, outside_scope and profile_unknown with
-	// severity error, so that the journal verifies only when every record
-	// is valid and every profile was checked.
-	Strict bool
+	// AllowIncomplete accepts the verdict incomplete: records in state
+	// unknown or outside_scope do not fail the journal. Meant for journals
+	// known to be incomplete, such as rotated logs.
+	AllowIncomplete bool
+	// RequireKnownProfiles makes records whose profile this verifier does
+	// not know (profile state outside_scope) count as incomplete; such a
+	// journal fails even with AllowIncomplete.
+	RequireKnownProfiles bool
+}
+
+// ExitCode maps the report to the exit code of the verify command.
+func (r Report) ExitCode() int {
+	switch {
+	case r.OK:
+		return ExitValid
+	case r.Verdict == VerdictInvalid:
+		return ExitInvalid
+	default:
+		return ExitIncomplete
+	}
+}
+
+// finish computes Verdict and OK from the record states.
+func (r *Report) finish() {
+	unknownProfiles := r.RequireKnownProfiles && r.ProfileStates.OutsideScope > 0
+	switch {
+	case r.States.Invalid > 0:
+		r.Verdict = VerdictInvalid
+	case r.States.Unknown > 0 || r.States.OutsideScope > 0 || unknownProfiles:
+		r.Verdict = VerdictIncomplete
+	default:
+		r.Verdict = VerdictValid
+	}
+	r.OK = r.Verdict == VerdictValid || (r.Verdict == VerdictIncomplete && r.AllowIncomplete && !unknownProfiles)
 }
 
 // Summary renders the report in one line, in the style of
-// "OK: 4 record(s) in 1 stream(s), hash chain intact".
+// "VALID: 4 record(s) in 1 stream(s), hash chain intact".
 func (r Report) Summary() string {
 	var b strings.Builder
-	if r.OK {
-		b.WriteString("OK")
-	} else {
-		b.WriteString("FAIL")
-	}
-	if r.Strict {
-		b.WriteString(" (strict)")
+	b.WriteString(strings.ToUpper(r.Verdict))
+	if r.Verdict == VerdictIncomplete && r.OK {
+		b.WriteString(" (allowed)")
 	}
 	fmt.Fprintf(&b, ": %d record(s) in %d stream(s)", r.Records, len(r.Streams))
 	switch {
-	case r.OK && r.States.Unknown == 0:
-		b.WriteString(", hash chain intact")
-	case r.OK:
+	case r.Verdict == VerdictInvalid:
+		fmt.Fprintf(&b, ", %d error(s)", r.Errors)
+	case r.States.Unknown > 0:
 		b.WriteString(", no invalid record")
 	default:
-		fmt.Fprintf(&b, ", %d error(s)", r.Errors)
+		b.WriteString(", hash chain intact")
 	}
 	if r.States.Unknown > 0 {
 		fmt.Fprintf(&b, ", %d unknown", r.States.Unknown)
 	}
 	if r.States.OutsideScope > 0 {
 		fmt.Fprintf(&b, ", %d outside scope", r.States.OutsideScope)
+	}
+	if r.ProfileStates.OutsideScope > 0 {
+		fmt.Fprintf(&b, ", %d with unknown profile", r.ProfileStates.OutsideScope)
 	}
 	if r.Restarts > 0 {
 		fmt.Fprintf(&b, ", %d restart(s)", r.Restarts)
@@ -342,7 +386,8 @@ type streamState struct {
 // every problem; chain state is advanced with the record's declared
 // chain_hash.
 func VerifyStream(rd io.Reader, opts Options) Report {
-	rep := Report{OK: true, Strict: opts.Strict, Findings: []Finding{}, Streams: []StreamSummary{}, Results: []RecordResult{}}
+	rep := Report{AllowIncomplete: opts.AllowIncomplete, RequireKnownProfiles: opts.RequireKnownProfiles,
+		Findings: []Finding{}, Streams: []StreamSummary{}, Results: []RecordResult{}}
 	streams := map[string]*streamState{}
 	br := bufio.NewReader(rd)
 	line := 0
@@ -375,6 +420,7 @@ func VerifyStream(rd io.Reader, opts Options) Report {
 	for _, id := range ids {
 		rep.Streams = append(rep.Streams, streams[id].summary)
 	}
+	rep.finish()
 	return rep
 }
 
@@ -412,7 +458,7 @@ func (rep *Report) verifyLine(streams map[string]*streamState, raw []byte, index
 		fs[i].StreamID = res.StreamID
 		fs[i].Seq = res.Seq
 	}
-	rep.add(opts.Strict, fs...)
+	rep.add(fs...)
 	rep.Results = append(rep.Results, res)
 	switch res.State {
 	case StateValid:
@@ -436,16 +482,12 @@ func (rep *Report) verifyLine(streams map[string]*streamState, raw []byte, index
 	}
 }
 
-func (r *Report) add(strict bool, fs ...Finding) {
+func (r *Report) add(fs ...Finding) {
 	for _, f := range fs {
-		if strict && strictClasses[f.Class] {
-			f.Severity = SeverityError
-		}
 		r.Findings = append(r.Findings, f)
 		switch f.Severity {
 		case SeverityError:
 			r.Errors++
-			r.OK = false
 		case SeverityNotice:
 			r.Notices++
 		}

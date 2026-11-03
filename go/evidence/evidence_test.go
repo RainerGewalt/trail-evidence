@@ -169,7 +169,10 @@ type streamIndex struct {
 		File              string   `json:"file"`
 		PublicKey         string   `json:"pubkey"`
 		RequireSignatures bool     `json:"require_signatures"`
-		Strict            bool     `json:"strict"`
+		AllowIncomplete   bool     `json:"allow_incomplete"`
+		RequireKnown      bool     `json:"require_known_profiles"`
+		Verdict           string   `json:"verdict"`
+		ExitCode          int      `json:"exit_code"`
 		OK                bool     `json:"ok"`
 		Records           int      `json:"records"`
 		Restarts          int      `json:"restarts"`
@@ -207,8 +210,11 @@ func checkIndex(t *testing.T, dir string) {
 	}
 	for _, c := range idx.Cases {
 		name := c.File
-		if c.Strict {
-			name += "/strict"
+		if c.AllowIncomplete {
+			name += "/allow-incomplete"
+		}
+		if c.RequireKnown {
+			name += "/require-known-profiles"
 		}
 		t.Run(name, func(t *testing.T) {
 			f, err := os.Open(filepath.Join(dir, c.File))
@@ -225,8 +231,12 @@ func checkIndex(t *testing.T, dir string) {
 				opts.PublicKey = pub
 				opts.RequireSignatures = c.RequireSignatures
 			}
-			opts.Strict = c.Strict
+			opts.AllowIncomplete = c.AllowIncomplete
+			opts.RequireKnownProfiles = c.RequireKnown
 			rep := evidence.VerifyStream(f, opts)
+			if rep.Verdict != c.Verdict || rep.ExitCode() != c.ExitCode {
+				t.Errorf("verdict %s exit %d, want %s exit %d", rep.Verdict, rep.ExitCode(), c.Verdict, c.ExitCode)
+			}
 			if rep.OK != c.OK {
 				t.Errorf("ok got %v want %v: %s", rep.OK, c.OK, rep.Summary())
 			}
@@ -273,11 +283,11 @@ func checkIndex(t *testing.T, dir string) {
 			if rep.States.Valid != counts["valid"] || rep.States.Invalid != counts["invalid"] || rep.States.Unknown != counts["unknown"] || rep.States.OutsideScope != counts["outside_scope"] {
 				t.Errorf("state counts %+v do not match %v", rep.States, c.States)
 			}
-			if rep.Strict != c.Strict {
-				t.Errorf("report strict %v, want %v", rep.Strict, c.Strict)
+			if rep.AllowIncomplete != c.AllowIncomplete || rep.RequireKnownProfiles != c.RequireKnown {
+				t.Errorf("report options %v/%v, want %v/%v", rep.AllowIncomplete, rep.RequireKnownProfiles, c.AllowIncomplete, c.RequireKnown)
 			}
-			if rep.OK != (rep.Errors == 0) {
-				t.Errorf("ok %v but %d error(s)", rep.OK, rep.Errors)
+			if (rep.Verdict == evidence.VerdictInvalid) != (rep.Errors > 0) {
+				t.Errorf("verdict %s with %d error(s)", rep.Verdict, rep.Errors)
 			}
 		})
 	}
@@ -608,9 +618,9 @@ func TestProfileJournals(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		rep := evidence.VerifyStream(f, evidence.Options{Strict: true})
+		rep := evidence.VerifyStream(f, evidence.Options{RequireKnownProfiles: true})
 		f.Close()
-		if !rep.OK || rep.States.Valid != rep.Records || rep.ProfileStates.Valid != rep.Records {
+		if !rep.OK || rep.Verdict != evidence.VerdictValid || rep.States.Valid != rep.Records || rep.ProfileStates.Valid != rep.Records {
 			t.Errorf("%s: %s %+v %+v", path, rep.Summary(), rep.States, rep.ProfileStates)
 		}
 	}
@@ -618,25 +628,27 @@ func TestProfileJournals(t *testing.T) {
 
 func TestSummaryLines(t *testing.T) {
 	cases := []struct {
-		file   string
-		strict bool
-		want   string
+		file string
+		opts evidence.Options
+		want string
 	}{
-		{"valid-chain.jsonl", false, "OK: 3 record(s) in 1 stream(s), hash chain intact"},
-		{"seq-gap.jsonl", false, "OK: 4 record(s) in 1 stream(s), no invalid record, 1 unknown"},
-		{"seq-gap.jsonl", true, "FAIL (strict): 4 record(s) in 1 stream(s), 1 error(s), 1 unknown"},
-		{"outside-scope.jsonl", false, "OK: 4 record(s) in 1 stream(s), hash chain intact, 2 outside scope"},
-		{"seq-mismatch.jsonl", false, "FAIL: 3 record(s) in 1 stream(s), 1 error(s)"},
+		{"valid-chain.jsonl", evidence.Options{}, "VALID: 3 record(s) in 1 stream(s), hash chain intact"},
+		{"seq-gap.jsonl", evidence.Options{}, "INCOMPLETE: 4 record(s) in 1 stream(s), no invalid record, 1 unknown"},
+		{"seq-gap.jsonl", evidence.Options{AllowIncomplete: true}, "INCOMPLETE (allowed): 4 record(s) in 1 stream(s), no invalid record, 1 unknown"},
+		{"outside-scope.jsonl", evidence.Options{}, "INCOMPLETE: 4 record(s) in 1 stream(s), hash chain intact, 2 outside scope"},
+		{"seq-mismatch.jsonl", evidence.Options{}, "INVALID: 3 record(s) in 1 stream(s), 1 error(s)"},
+		{"profile-unknown.jsonl", evidence.Options{}, "VALID: 3 record(s) in 1 stream(s), hash chain intact, 2 with unknown profile"},
+		{"profile-unknown.jsonl", evidence.Options{RequireKnownProfiles: true}, "INCOMPLETE: 3 record(s) in 1 stream(s), hash chain intact, 2 with unknown profile"},
 	}
 	for _, c := range cases {
 		f, err := os.Open(filepath.Join(repoRoot, "testdata", "streams", c.file))
 		if err != nil {
 			t.Fatal(err)
 		}
-		got := evidence.VerifyStream(f, evidence.Options{Strict: c.strict}).Summary()
+		got := evidence.VerifyStream(f, c.opts).Summary()
 		f.Close()
 		if got != c.want {
-			t.Errorf("%s strict=%v:\n got %s\nwant %s", c.file, c.strict, got, c.want)
+			t.Errorf("%s %+v:\n got %s\nwant %s", c.file, c.opts, got, c.want)
 		}
 	}
 }

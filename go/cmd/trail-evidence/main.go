@@ -1,13 +1,14 @@
 // Command trail-evidence verifies Trail Evidence journals, recomputes the
 // hashes of a single record and prints the reference test vectors.
 //
-//	trail-evidence verify <file.jsonl|-> [--pubkey <hex|file>] [--require-signatures] [--strict] [--json]
+//	trail-evidence verify <file.jsonl|-> [--pubkey <hex|file>] [--require-signatures] [--allow-incomplete] [--require-known-profiles] [--json]
 //	trail-evidence hash <record.json|->
 //	trail-evidence profiles
 //	trail-evidence vectors
 //
-// Exit codes: 0 verification passed, 1 verification failed, 2 usage or I/O
-// error.
+// Exit codes of verify: 0 verdict valid (or incomplete with
+// --allow-incomplete), 1 verdict invalid, 2 usage or I/O error, 3 verdict
+// incomplete. hash exits 1 when the recorded hashes do not match.
 package main
 
 import (
@@ -82,7 +83,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 func usage(w io.Writer) {
 	fmt.Fprint(w, `usage:
-  trail-evidence verify <file.jsonl|-> [--pubkey <hex|file>] [--require-signatures] [--strict] [--json]
+  trail-evidence verify <file.jsonl|-> [--pubkey <hex|file>] [--require-signatures] [--allow-incomplete] [--require-known-profiles] [--json]
   trail-evidence hash <record.json|->
   trail-evidence profiles
   trail-evidence vectors
@@ -90,10 +91,16 @@ func usage(w io.Writer) {
 
 verify   checks a JSON Lines journal: schema, content_hash, chain_hash,
          prev_hash links, seq, restarts, profiles and (with --pubkey)
-         Ed25519 signatures, and gives every record a state: valid,
-         invalid, unknown or outside_scope. Exit 0 when no record is
-         invalid, 1 otherwise. --strict also fails on unknown and
-         outside_scope records and on profiles this verifier does not know.
+         Ed25519 signatures, gives every record a state (valid, invalid,
+         unknown, outside_scope) and the journal a verdict:
+           valid       every record valid                       exit 0
+           invalid     at least one record invalid              exit 1
+           incomplete  no record invalid, but at least one      exit 3
+                       unknown or outside_scope
+         --allow-incomplete accepts incomplete (exit 0), for journals known
+         to be incomplete such as rotated logs. --require-known-profiles
+         also counts records with a profile this verifier does not know as
+         incomplete; --allow-incomplete does not accept those.
 hash     recomputes content_hash and chain_hash of one record and prints
          the canonical core, its findings and its state on its own.
 profiles lists the profiles this verifier knows.
@@ -123,7 +130,7 @@ func splitArgs(args []string) (positional []string, flags map[string]string, err
 			}
 			flags[name] = args[i+1]
 			i++
-		case "json", "require-signatures", "strict":
+		case "json", "require-signatures", "allow-incomplete", "require-known-profiles":
 			flags[name] = "true"
 		default:
 			return nil, nil, fmt.Errorf("unknown flag --%s", name)
@@ -145,7 +152,7 @@ func cmdVerify(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			fmt.Fprintln(stderr, err)
 		}
-		fmt.Fprintln(stderr, "usage: trail-evidence verify <file.jsonl|-> [--pubkey <hex|file>] [--require-signatures] [--strict] [--json]")
+		fmt.Fprintln(stderr, "usage: trail-evidence verify <file.jsonl|-> [--pubkey <hex|file>] [--require-signatures] [--allow-incomplete] [--require-known-profiles] [--json]")
 		return 2
 	}
 	var opts evidence.Options
@@ -164,7 +171,8 @@ func cmdVerify(args []string, stdout, stderr io.Writer) int {
 		}
 		opts.RequireSignatures = true
 	}
-	opts.Strict = flags["strict"] == "true"
+	opts.AllowIncomplete = flags["allow-incomplete"] == "true"
+	opts.RequireKnownProfiles = flags["require-known-profiles"] == "true"
 	in, err := openInput(pos[0])
 	if err != nil {
 		fmt.Fprintln(stderr, err)
@@ -191,10 +199,7 @@ func cmdVerify(args []string, stdout, stderr io.Writer) int {
 				f.Severity, f.Class, f.Index, f.Line, f.StreamID, seq, f.Message)
 		}
 	}
-	if rep.OK {
-		return 0
-	}
-	return 1
+	return rep.ExitCode()
 }
 
 func cmdHash(args []string, stdout, stderr io.Writer) int {

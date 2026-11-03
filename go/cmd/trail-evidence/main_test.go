@@ -11,7 +11,7 @@ func TestVerifyCommand(t *testing.T) {
 	if code := run([]string{"verify", "../../../examples/transfer-worker.jsonl"}, &out, &errb); code != 0 {
 		t.Fatalf("exit %d: %s %s", code, out.String(), errb.String())
 	}
-	if !strings.HasPrefix(out.String(), "OK:") {
+	if !strings.HasPrefix(out.String(), "VALID:") {
 		t.Errorf("unexpected output %q", out.String())
 	}
 	out.Reset()
@@ -26,15 +26,28 @@ func TestVerifyCommand(t *testing.T) {
 		t.Errorf("json output lacks seq_mismatch or the decimal seq: %s", out.String())
 	}
 	out.Reset()
-	if code := run([]string{"verify", "../../../testdata/streams/seq-gap.jsonl"}, &out, &errb); code != 0 {
-		t.Fatalf("seq-gap without --strict: expected exit 0, got %d: %s", code, out.String())
+	if code := run([]string{"verify", "../../../testdata/streams/seq-gap.jsonl"}, &out, &errb); code != 3 {
+		t.Fatalf("seq-gap: expected exit 3 (incomplete), got %d: %s", code, out.String())
+	}
+	if !strings.HasPrefix(out.String(), "INCOMPLETE:") {
+		t.Errorf("unexpected output %q", out.String())
 	}
 	out.Reset()
-	if code := run([]string{"verify", "../../../testdata/streams/seq-gap.jsonl", "--strict", "--json"}, &out, &errb); code != 1 {
-		t.Fatalf("seq-gap with --strict: expected exit 1, got %d", code)
+	if code := run([]string{"verify", "../../../testdata/streams/seq-gap.jsonl", "--allow-incomplete", "--json"}, &out, &errb); code != 0 {
+		t.Fatalf("seq-gap with --allow-incomplete: expected exit 0, got %d", code)
 	}
-	if !strings.Contains(out.String(), `"strict": true`) || !strings.Contains(out.String(), `"state": "unknown"`) {
-		t.Errorf("strict json output: %s", out.String())
+	if !strings.Contains(out.String(), `"verdict": "incomplete"`) || !strings.Contains(out.String(), `"state": "unknown"`) {
+		t.Errorf("json output: %s", out.String())
+	}
+	out.Reset()
+	if code := run([]string{"verify", "../../../testdata/streams/profile-unknown.jsonl"}, &out, &errb); code != 0 {
+		t.Fatalf("unknown profiles must not affect the verdict, got exit %d", code)
+	}
+	if code := run([]string{"verify", "../../../testdata/streams/profile-unknown.jsonl", "--require-known-profiles", "--allow-incomplete"}, &out, &errb); code != 3 {
+		t.Fatalf("--require-known-profiles: expected exit 3, got %d", code)
+	}
+	if code := run([]string{"verify", "../../../testdata/streams/seq-gap.jsonl", "--strict"}, &out, &errb); code != 2 {
+		t.Errorf("--strict is not a flag any more: expected exit 2, got %d", code)
 	}
 	if code := run([]string{"verify"}, &out, &errb); code != 2 {
 		t.Errorf("usage error should exit 2, got %d", code)

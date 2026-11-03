@@ -4,7 +4,9 @@
     {
       "file": "hash-mismatch.jsonl",
       "description": "Record 2, a failed job, was edited in the file to read status ok. Its content_hash and chain_hash were left alone, so both no longer match: hash_mismatch on record 2, invalid. Record 3 still links to the declared chain_hash, so it is valid.",
+      "verdict": "invalid",
       "ok": false,
+      "exit_code": 1,
       "records": 4,
       "restarts": 0,
       "findings": [
@@ -29,7 +31,9 @@
     {
       "file": "chain-break.jsonl",
       "description": "Record 2 was edited the same way and then re-sealed: its hashes are recomputed and consistent, so it is valid on its own. Record 3 still carries the prev_hash of the original record 2, so the link from 3 to 2 fails: chain_break on record 3, invalid.",
+      "verdict": "invalid",
       "ok": false,
+      "exit_code": 1,
       "records": 4,
       "restarts": 0,
       "findings": [
@@ -54,7 +58,9 @@
     {
       "file": "seq-mismatch.jsonl",
       "description": "Record 2, the failed job, was deleted and record 3 re-sealed so that it links to record 1. Every hash and link checks out, but the record that links to seq 1 has seq 3: seq_mismatch on the record that is now at index 2, invalid.",
+      "verdict": "invalid",
       "ok": false,
+      "exit_code": 1,
       "records": 3,
       "restarts": 0,
       "findings": [
@@ -79,7 +85,9 @@
       "description": "The journal was signed with the TEST KEY. Record 2 was edited and records 2 and 3 were re-sealed, so every hash, link and seq checks out and verification without a key passes. The signatures were copied from the originals and cover the old chain_hash values: with the test public key, signature_invalid on records 2 and 3.",
       "pubkey": "../../testdata/keys/test-ed25519.pub",
       "require_signatures": true,
+      "verdict": "invalid",
       "ok": false,
+      "exit_code": 1,
       "records": 4,
       "restarts": 0,
       "findings": [
@@ -107,8 +115,10 @@
     },
     {
       "file": "seq-gap.jsonl",
-      "description": "Record 2, the failed job, was deleted and nothing else changed. Record 3 links to the deleted record, which the journal does not have: seq_gap, state unknown. No record is provably invalid, so verification without --strict passes and reports one unknown record.",
-      "ok": true,
+      "description": "Record 2, the failed job, was deleted and nothing else changed. Record 3 links to the deleted record, which the journal does not have: seq_gap, state unknown. No record is provably invalid, but the journal is incomplete, which fails (exit code 3).",
+      "verdict": "incomplete",
+      "ok": false,
+      "exit_code": 3,
       "records": 3,
       "restarts": 0,
       "findings": [
@@ -130,9 +140,11 @@
     },
     {
       "file": "seq-gap.jsonl",
-      "description": "The same journal with strict verification: the unknown record fails it.",
-      "strict": true,
-      "ok": false,
+      "description": "The same journal with --allow-incomplete: accepted. This is why the option is only for journals known to be incomplete.",
+      "allow_incomplete": true,
+      "verdict": "incomplete",
+      "ok": true,
+      "exit_code": 0,
       "records": 3,
       "restarts": 0,
       "findings": [
@@ -154,8 +166,10 @@
     },
     {
       "file": "outside-scope.jsonl",
-      "description": "Record 2 was edited and its schema changed to trail.evidence/2, so that a verifier for trail.evidence/1 does not check it: outside_scope. Record 3 still links to the original record 2, which the chain therefore does not have: seq_gap, unknown. Without --strict the journal passes with one record outside the scope and one unknown.",
-      "ok": true,
+      "description": "Record 2 was edited and its schema changed to trail.evidence/2, so that a verifier for trail.evidence/1 does not check it: outside_scope. Record 3 still links to the original record 2, which the chain therefore does not have: seq_gap, unknown. The journal is incomplete (one record outside the scope, one unknown), which fails (exit code 3).",
+      "verdict": "incomplete",
+      "ok": false,
+      "exit_code": 3,
       "records": 4,
       "restarts": 0,
       "findings": [
@@ -183,9 +197,11 @@
     },
     {
       "file": "outside-scope.jsonl",
-      "description": "The same journal with strict verification: it fails on both records.",
-      "strict": true,
-      "ok": false,
+      "description": "The same journal with --allow-incomplete: accepted.",
+      "allow_incomplete": true,
+      "verdict": "incomplete",
+      "ok": true,
+      "exit_code": 0,
       "records": 4,
       "restarts": 0,
       "findings": [

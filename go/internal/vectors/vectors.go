@@ -69,21 +69,25 @@ type ExpectedFinding struct {
 
 // StreamCase describes one fixture under testdata/streams. States and
 // ProfileStates list the expected state and profile state of every record,
-// by index. A file may appear in several cases, for example once without
-// and once with Strict.
+// by index; Verdict follows from them and the options (SPEC.md section
+// 6.4) and is checked against OK. A file may appear in several cases with
+// different options.
 type StreamCase struct {
-	File              string            `json:"file"`
-	Description       string            `json:"description"`
-	PublicKey         string            `json:"pubkey,omitempty"`
-	RequireSignatures bool              `json:"require_signatures,omitempty"`
-	Strict            bool              `json:"strict,omitempty"`
-	OK                bool              `json:"ok"`
-	Records           int               `json:"records"`
-	Restarts          int               `json:"restarts"`
-	Findings          []ExpectedFinding `json:"findings"`
-	States            []string          `json:"states"`
-	ProfileStates     []string          `json:"profile_states"`
-	Lines             []string          `json:"-"`
+	File                 string            `json:"file"`
+	Description          string            `json:"description"`
+	PublicKey            string            `json:"pubkey,omitempty"`
+	RequireSignatures    bool              `json:"require_signatures,omitempty"`
+	AllowIncomplete      bool              `json:"allow_incomplete,omitempty"`
+	RequireKnownProfiles bool              `json:"require_known_profiles,omitempty"`
+	Verdict              string            `json:"verdict"`
+	OK                   bool              `json:"ok"`
+	ExitCode             int               `json:"exit_code"`
+	Records              int               `json:"records"`
+	Restarts             int               `json:"restarts"`
+	Findings             []ExpectedFinding `json:"findings"`
+	States               []string          `json:"states"`
+	ProfileStates        []string          `json:"profile_states"`
+	Lines                []string          `json:"-"`
 }
 
 // Journal is one example journal under examples/.
@@ -512,8 +516,6 @@ func buildStreams(priv ed25519.PrivateKey) []StreamCase {
 	valid := chain(evidence.ProducerOther, "p", "s", ev, `{"n":0}`, `{"n":1}`, `{"n":2}`)
 	cases = append(cases, StreamCase{File: "valid-chain.jsonl", Description: "Three correctly chained records.",
 		OK: true, Records: 3, Findings: []ExpectedFinding{}, States: states("vvv"), ProfileStates: none(3), Lines: lines(valid...)})
-	cases = append(cases, StreamCase{File: "valid-chain.jsonl", Description: "The same journal with strict verification: every record is valid, so it passes.", Strict: true,
-		OK: true, Records: 3, Findings: []ExpectedFinding{}, States: states("vvv"), ProfileStates: none(3), Lines: lines(valid...)})
 
 	// seq mismatch: third record sealed with seq 3 but linked to record 1.
 	mm := chain(evidence.ProducerOther, "p", "s", ev, `{"n":0}`, `{"n":1}`)
@@ -526,10 +528,10 @@ func buildStreams(priv ed25519.PrivateKey) []StreamCase {
 	gp := chain(evidence.ProducerOther, "p", "s", ev, `{"n":0}`, `{"n":1}`, `{"n":2}`, `{"n":3}`, `{"n":4}`)
 	gapLines := lines(gp[0], gp[1], gp[3], gp[4])
 	gapFindings := []ExpectedFinding{{Index: 2, Class: evidence.ClassSeqGap}, {Index: 3, Class: evidence.ClassAfterUnknown}}
-	cases = append(cases, StreamCase{File: "seq-gap.jsonl", Description: "Record with seq 2 is missing from the journal; the record with seq 3 links to it. Its own hashes are correct but its predecessor cannot be checked: seq_gap, state unknown. The next record links correctly to it: valid, with the notice after_unknown. No record is invalid, so the journal verifies.",
-		OK: true, Records: 4, Findings: gapFindings, States: states("vvuv"), ProfileStates: none(4), Lines: gapLines})
-	cases = append(cases, StreamCase{File: "seq-gap.jsonl", Description: "The same journal with strict verification: the unknown record fails it (seq_gap is reported as an error).", Strict: true,
+	cases = append(cases, StreamCase{File: "seq-gap.jsonl", Description: "Record with seq 2 is missing from the journal; the record with seq 3 links to it. Its own hashes are correct but its predecessor cannot be checked: seq_gap, state unknown. The next record links correctly to it: valid, with the notice after_unknown. No record is invalid, one is unknown: verdict incomplete, which fails (exit code 3).",
 		OK: false, Records: 4, Findings: gapFindings, States: states("vvuv"), ProfileStates: none(4), Lines: gapLines})
+	cases = append(cases, StreamCase{File: "seq-gap.jsonl", Description: "The same journal with --allow-incomplete: the verdict stays incomplete, but it is accepted (exit code 0).", AllowIncomplete: true,
+		OK: true, Records: 4, Findings: gapFindings, States: states("vvuv"), ProfileStates: none(4), Lines: gapLines})
 
 	// journal start: an excerpt that begins in the middle of a stream, and a
 	// second stream that begins with an anchored restart.
@@ -542,10 +544,10 @@ func buildStreams(priv ed25519.PrivateKey) []StreamCase {
 	seal(&tn, tr.ChainHash)
 	startLines := lines(full[5], &tr, full[6], &tn, full[7])
 	startFindings := []ExpectedFinding{{Index: 0, Class: evidence.ClassSeqGap}, {Index: 1, Class: evidence.ClassRestart}, {Index: 2, Class: evidence.ClassAfterUnknown}}
-	cases = append(cases, StreamCase{File: "journal-start.jsonl", Description: "Excerpt of stream s that begins at seq 5: the first record is neither genesis nor a restart, so its predecessor is missing (seq_gap, unknown); the records after it are valid, the first with after_unknown. Stream t begins with a restart anchored at an earlier segment: valid with a restart notice.",
-		OK: true, Records: 5, Restarts: 1, Findings: startFindings, States: states("uvvvv"), ProfileStates: none(5), Lines: startLines})
-	cases = append(cases, StreamCase{File: "journal-start.jsonl", Description: "The same excerpt with strict verification: the unknown first record fails it.", Strict: true,
+	cases = append(cases, StreamCase{File: "journal-start.jsonl", Description: "Excerpt of stream s that begins at seq 5: the first record is neither genesis nor a restart, so its predecessor is missing (seq_gap, unknown); the records after it are valid, the first with after_unknown. Stream t begins with a restart anchored at an earlier segment: valid with a restart notice. Verdict incomplete.",
 		OK: false, Records: 5, Restarts: 1, Findings: startFindings, States: states("uvvvv"), ProfileStates: none(5), Lines: startLines})
+	cases = append(cases, StreamCase{File: "journal-start.jsonl", Description: "The same excerpt with --allow-incomplete, as for a rotated log: accepted.", AllowIncomplete: true,
+		OK: true, Records: 5, Restarts: 1, Findings: startFindings, States: states("uvvvv"), ProfileStates: none(5), Lines: startLines})
 
 	// chain break: third record sealed against the wrong predecessor.
 	brk := chain(evidence.ProducerOther, "p", "s", ev, `{"n":0}`, `{"n":1}`)
@@ -722,10 +724,10 @@ func buildScopeStreams() []StreamCase {
 	ol := []string{encode(sc[0]), foreign1, foreign2, encode(sc[1])}
 	of := []ExpectedFinding{{Index: 1, Class: evidence.ClassOutsideScope}, {Index: 2, Class: evidence.ClassOutsideScope}}
 	return []StreamCase{
-		{File: "outside-scope.jsonl", Description: "Records 1 and 2 name another major version (trail.evidence/2) and another format (acme.audit/1): outside_scope, not checked, no part in any chain. Record 3 is chained against the last checked record of its stream, record 0, and is valid.",
-			OK: true, Records: 4, Findings: of, States: states("voov"), ProfileStates: none(4), Lines: ol},
-		{File: "outside-scope.jsonl", Description: "The same journal with strict verification: the two records outside the scope fail it.", Strict: true,
+		{File: "outside-scope.jsonl", Description: "Records 1 and 2 name another major version (trail.evidence/2) and another format (acme.audit/1): outside_scope, not checked, no part in any chain. Record 3 is chained against the last checked record of its stream, record 0, and is valid. Verdict incomplete, because two records were not checked.",
 			OK: false, Records: 4, Findings: of, States: states("voov"), ProfileStates: none(4), Lines: ol},
+		{File: "outside-scope.jsonl", Description: "The same journal with --allow-incomplete: accepted.", AllowIncomplete: true,
+			OK: true, Records: 4, Findings: of, States: states("voov"), ProfileStates: none(4), Lines: ol},
 	}
 }
 
@@ -747,7 +749,7 @@ func buildProfileStreams() []StreamCase {
 	pv := pchain("m", [2]string{known, measurement("21.5")}, [2]string{known, measurement("21.6")}, [2]string{known, `{"quantity":"temperature","value":"21.7","unit":"degC","extra":"allowed"}`})
 	cases = append(cases, StreamCase{File: "profile-valid.jsonl", Description: "Three records with the profile example.measurement/1 whose payloads satisfy it (the third has an extra member, which profiles allow).",
 		OK: true, Records: 3, Findings: []ExpectedFinding{}, States: states("vvv"), ProfileStates: profileStates("vvv"), Lines: lines(pv...)})
-	cases = append(cases, StreamCase{File: "profile-valid.jsonl", Description: "The same journal with strict verification: every profile is known and satisfied.", Strict: true,
+	cases = append(cases, StreamCase{File: "profile-valid.jsonl", Description: "The same journal with --require-known-profiles: every profile is known and satisfied.", RequireKnownProfiles: true,
 		OK: true, Records: 3, Findings: []ExpectedFinding{}, States: states("vvv"), ProfileStates: profileStates("vvv"), Lines: lines(pv...)})
 
 	ps := pchain("m",
@@ -763,9 +765,11 @@ func buildProfileStreams() []StreamCase {
 
 	pu := pchain("m", [2]string{known, measurement("21.5")}, [2]string{"example.measurement/2", measurement("21.6")}, [2]string{"acme.unknown/1", `{"anything":"goes"}`})
 	puFindings := []ExpectedFinding{{Index: 1, Class: evidence.ClassProfileUnknown}, {Index: 2, Class: evidence.ClassProfileUnknown}}
-	cases = append(cases, StreamCase{File: "profile-unknown.jsonl", Description: "Records 1 and 2 use profiles this verifier does not know. Their core checks pass, so the journal verifies; the payloads were not checked against a profile (profile_unknown).",
+	cases = append(cases, StreamCase{File: "profile-unknown.jsonl", Description: "Records 1 and 2 use profiles this verifier does not know. Their core checks pass and an unknown profile does not affect the verdict: valid. The payloads were not checked against a profile (profile_unknown, profile state outside_scope).",
 		OK: true, Records: 3, Findings: puFindings, States: states("vvv"), ProfileStates: profileStates("voo"), Lines: lines(pu...)})
-	cases = append(cases, StreamCase{File: "profile-unknown.jsonl", Description: "The same journal with strict verification: a profile that was not checked fails it.", Strict: true,
+	cases = append(cases, StreamCase{File: "profile-unknown.jsonl", Description: "The same journal with --require-known-profiles: records with an unknown profile make it incomplete, which fails (exit code 3).", RequireKnownProfiles: true,
+		OK: false, Records: 3, Findings: puFindings, States: states("vvv"), ProfileStates: profileStates("voo"), Lines: lines(pu...)})
+	cases = append(cases, StreamCase{File: "profile-unknown.jsonl", Description: "With --require-known-profiles and --allow-incomplete: --allow-incomplete does not accept unknown profiles that --require-known-profiles asks for, so it still fails (exit code 3).", RequireKnownProfiles: true, AllowIncomplete: true,
 		OK: false, Records: 3, Findings: puFindings, States: states("vvv"), ProfileStates: profileStates("voo"), Lines: lines(pu...)})
 
 	pt := pchain("m", [2]string{known, measurement("21.5")}, [2]string{known, measurement("21.6")}, [2]string{known, measurement("21.7")}, [2]string{known, measurement("21.8")})
@@ -892,8 +896,8 @@ func forge(s string) string {
 }
 
 // buildTampered derives manipulated journals from the transfer-worker
-// example: one per error class, plus the two manipulations that do not
-// produce an error but leave a record unknown.
+// example: one per error class (verdict invalid), plus the two
+// manipulations that leave a record unknown (verdict incomplete).
 func buildTampered(priv ed25519.PrivateKey) []StreamCase {
 	var cases []StreamCase
 
@@ -947,11 +951,11 @@ func buildTampered(priv ed25519.PrivateKey) []StreamCase {
 	dl := lines(t[0], t[1], t[3])
 	df := []ExpectedFinding{{Index: 2, Class: evidence.ClassSeqGap}}
 	cases = append(cases, StreamCase{File: "seq-gap.jsonl",
-		Description: "Record 2, the failed job, was deleted and nothing else changed. Record 3 links to the deleted record, which the journal does not have: seq_gap, state unknown. No record is provably invalid, so verification without --strict passes and reports one unknown record.",
-		OK:          true, Records: 3, Findings: df, States: states("vvu"), ProfileStates: none(3), Lines: dl})
-	cases = append(cases, StreamCase{File: "seq-gap.jsonl", Strict: true,
-		Description: "The same journal with strict verification: the unknown record fails it.",
+		Description: "Record 2, the failed job, was deleted and nothing else changed. Record 3 links to the deleted record, which the journal does not have: seq_gap, state unknown. No record is provably invalid, but the journal is incomplete, which fails (exit code 3).",
 		OK:          false, Records: 3, Findings: df, States: states("vvu"), ProfileStates: none(3), Lines: dl})
+	cases = append(cases, StreamCase{File: "seq-gap.jsonl", AllowIncomplete: true,
+		Description: "The same journal with --allow-incomplete: accepted. This is why the option is only for journals known to be incomplete.",
+		OK:          true, Records: 3, Findings: df, States: states("vvu"), ProfileStates: none(3), Lines: dl})
 
 	// outside_scope: record 2 edited and its schema changed to another major version.
 	t = transferWorker()
@@ -959,11 +963,11 @@ func buildTampered(priv ed25519.PrivateKey) []StreamCase {
 	ol[2] = replaceOnce(forge(ol[2]), `"schema":"trail.evidence/1"`, `"schema":"trail.evidence/2"`)
 	of := []ExpectedFinding{{Index: 2, Class: evidence.ClassOutsideScope}, {Index: 3, Class: evidence.ClassSeqGap}}
 	cases = append(cases, StreamCase{File: "outside-scope.jsonl",
-		Description: "Record 2 was edited and its schema changed to trail.evidence/2, so that a verifier for trail.evidence/1 does not check it: outside_scope. Record 3 still links to the original record 2, which the chain therefore does not have: seq_gap, unknown. Without --strict the journal passes with one record outside the scope and one unknown.",
-		OK:          true, Records: 4, Findings: of, States: states("vvou"), ProfileStates: none(4), Lines: ol})
-	cases = append(cases, StreamCase{File: "outside-scope.jsonl", Strict: true,
-		Description: "The same journal with strict verification: it fails on both records.",
+		Description: "Record 2 was edited and its schema changed to trail.evidence/2, so that a verifier for trail.evidence/1 does not check it: outside_scope. Record 3 still links to the original record 2, which the chain therefore does not have: seq_gap, unknown. The journal is incomplete (one record outside the scope, one unknown), which fails (exit code 3).",
 		OK:          false, Records: 4, Findings: of, States: states("vvou"), ProfileStates: none(4), Lines: ol})
+	cases = append(cases, StreamCase{File: "outside-scope.jsonl", AllowIncomplete: true,
+		Description: "The same journal with --allow-incomplete: accepted.",
+		OK:          true, Records: 4, Findings: of, States: states("vvou"), ProfileStates: none(4), Lines: ol})
 
 	return cases
 }
@@ -997,7 +1001,7 @@ type StreamIndex struct {
 
 // MarshalStreamIndex renders testdata/streams/expected.json.
 func MarshalStreamIndex(cases []StreamCase) []byte {
-	return marshalIndex("Each case names a JSON Lines fixture, the options (pubkey, require_signatures, strict) and the verdict a verifier must reach. findings lists the distinct (index, class) pairs in order of first occurrence; states and profile_states list the expected state and profile state of every record; index counts non-empty lines from 0. pubkey paths are relative to this file. A file may appear in several cases with different options.", cases)
+	return marshalIndex("Each case names a JSON Lines fixture, the options (pubkey, require_signatures, allow_incomplete, require_known_profiles) and the verdict (valid, invalid, incomplete), ok and exit code of the verify command a verifier must reach. findings lists the distinct (index, class) pairs in order of first occurrence; states and profile_states list the expected state and profile state of every record; index counts non-empty lines from 0. pubkey paths are relative to this file. A file may appear in several cases with different options.", cases)
 }
 
 // MarshalTamperedIndex renders examples/tampered/expected.json.
@@ -1005,7 +1009,48 @@ func MarshalTamperedIndex(cases []StreamCase) []byte {
 	return marshalIndex("Manipulated copies of examples/transfer-worker.jsonl and the verdict a verifier must reach. Same format as testdata/streams/expected.json: findings lists the distinct (index, class) pairs in order of first occurrence, states and profile_states the expected state of every record; pubkey paths are relative to this file.", cases)
 }
 
+// withVerdicts derives each case's verdict and exit code from its expected
+// states and options and panics when the hand-written OK disagrees.
+func withVerdicts(cases []StreamCase) []StreamCase {
+	out := make([]StreamCase, len(cases))
+	for i, c := range cases {
+		count := func(list []string, v string) int {
+			n := 0
+			for _, x := range list {
+				if x == v {
+					n++
+				}
+			}
+			return n
+		}
+		unknownProfiles := c.RequireKnownProfiles && count(c.ProfileStates, evidence.StateOutsideScope) > 0
+		switch {
+		case count(c.States, evidence.StateInvalid) > 0:
+			c.Verdict = evidence.VerdictInvalid
+		case count(c.States, evidence.StateUnknown)+count(c.States, evidence.StateOutsideScope) > 0 || unknownProfiles:
+			c.Verdict = evidence.VerdictIncomplete
+		default:
+			c.Verdict = evidence.VerdictValid
+		}
+		ok := c.Verdict == evidence.VerdictValid || (c.Verdict == evidence.VerdictIncomplete && c.AllowIncomplete && !unknownProfiles)
+		if ok != c.OK {
+			panic(fmt.Sprintf("case %s: ok %v contradicts verdict %s and the options", c.File, c.OK, c.Verdict))
+		}
+		switch {
+		case ok:
+			c.ExitCode = evidence.ExitValid
+		case c.Verdict == evidence.VerdictInvalid:
+			c.ExitCode = evidence.ExitInvalid
+		default:
+			c.ExitCode = evidence.ExitIncomplete
+		}
+		out[i] = c
+	}
+	return out
+}
+
 func marshalIndex(note string, cases []StreamCase) []byte {
+	cases = withVerdicts(cases)
 	idx := StreamIndex{
 		Note:  note,
 		Cases: cases,

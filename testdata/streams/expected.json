@@ -1,29 +1,12 @@
 {
-  "note": "Each case names a JSON Lines fixture, the options (pubkey, require_signatures, strict) and the verdict a verifier must reach. findings lists the distinct (index, class) pairs in order of first occurrence; states and profile_states list the expected state and profile state of every record; index counts non-empty lines from 0. pubkey paths are relative to this file. A file may appear in several cases with different options.",
+  "note": "Each case names a JSON Lines fixture, the options (pubkey, require_signatures, allow_incomplete, require_known_profiles) and the verdict (valid, invalid, incomplete), ok and exit code of the verify command a verifier must reach. findings lists the distinct (index, class) pairs in order of first occurrence; states and profile_states list the expected state and profile state of every record; index counts non-empty lines from 0. pubkey paths are relative to this file. A file may appear in several cases with different options.",
   "cases": [
     {
       "file": "valid-chain.jsonl",
       "description": "Three correctly chained records.",
+      "verdict": "valid",
       "ok": true,
-      "records": 3,
-      "restarts": 0,
-      "findings": [],
-      "states": [
-        "valid",
-        "valid",
-        "valid"
-      ],
-      "profile_states": [
-        "none",
-        "none",
-        "none"
-      ]
-    },
-    {
-      "file": "valid-chain.jsonl",
-      "description": "The same journal with strict verification: every record is valid, so it passes.",
-      "strict": true,
-      "ok": true,
+      "exit_code": 0,
       "records": 3,
       "restarts": 0,
       "findings": [],
@@ -41,7 +24,9 @@
     {
       "file": "seq-mismatch.jsonl",
       "description": "Third record has seq 3 but its prev_hash links to record 1 (seq 1). The link says nothing is missing, the seq says a record is: seq_mismatch, invalid. This is what deleting a record and re-sealing its successor looks like.",
+      "verdict": "invalid",
       "ok": false,
+      "exit_code": 1,
       "records": 3,
       "restarts": 0,
       "findings": [
@@ -63,8 +48,10 @@
     },
     {
       "file": "seq-gap.jsonl",
-      "description": "Record with seq 2 is missing from the journal; the record with seq 3 links to it. Its own hashes are correct but its predecessor cannot be checked: seq_gap, state unknown. The next record links correctly to it: valid, with the notice after_unknown. No record is invalid, so the journal verifies.",
-      "ok": true,
+      "description": "Record with seq 2 is missing from the journal; the record with seq 3 links to it. Its own hashes are correct but its predecessor cannot be checked: seq_gap, state unknown. The next record links correctly to it: valid, with the notice after_unknown. No record is invalid, one is unknown: verdict incomplete, which fails (exit code 3).",
+      "verdict": "incomplete",
+      "ok": false,
+      "exit_code": 3,
       "records": 4,
       "restarts": 0,
       "findings": [
@@ -92,9 +79,11 @@
     },
     {
       "file": "seq-gap.jsonl",
-      "description": "The same journal with strict verification: the unknown record fails it (seq_gap is reported as an error).",
-      "strict": true,
-      "ok": false,
+      "description": "The same journal with --allow-incomplete: the verdict stays incomplete, but it is accepted (exit code 0).",
+      "allow_incomplete": true,
+      "verdict": "incomplete",
+      "ok": true,
+      "exit_code": 0,
       "records": 4,
       "restarts": 0,
       "findings": [
@@ -122,8 +111,10 @@
     },
     {
       "file": "journal-start.jsonl",
-      "description": "Excerpt of stream s that begins at seq 5: the first record is neither genesis nor a restart, so its predecessor is missing (seq_gap, unknown); the records after it are valid, the first with after_unknown. Stream t begins with a restart anchored at an earlier segment: valid with a restart notice.",
-      "ok": true,
+      "description": "Excerpt of stream s that begins at seq 5: the first record is neither genesis nor a restart, so its predecessor is missing (seq_gap, unknown); the records after it are valid, the first with after_unknown. Stream t begins with a restart anchored at an earlier segment: valid with a restart notice. Verdict incomplete.",
+      "verdict": "incomplete",
+      "ok": false,
+      "exit_code": 3,
       "records": 5,
       "restarts": 1,
       "findings": [
@@ -157,9 +148,11 @@
     },
     {
       "file": "journal-start.jsonl",
-      "description": "The same excerpt with strict verification: the unknown first record fails it.",
-      "strict": true,
-      "ok": false,
+      "description": "The same excerpt with --allow-incomplete, as for a rotated log: accepted.",
+      "allow_incomplete": true,
+      "verdict": "incomplete",
+      "ok": true,
+      "exit_code": 0,
       "records": 5,
       "restarts": 1,
       "findings": [
@@ -194,7 +187,9 @@
     {
       "file": "chain-break.jsonl",
       "description": "Third record has the next seq but links to record 0 instead of record 1: a record was replaced or reordered. chain_break, invalid.",
+      "verdict": "invalid",
       "ok": false,
+      "exit_code": 1,
       "records": 3,
       "restarts": 0,
       "findings": [
@@ -217,7 +212,9 @@
     {
       "file": "restart.jsonl",
       "description": "A restart record anchored at the last chain_hash of the previous segment, followed by one chained record. Verifies OK with one restart notice.",
+      "verdict": "valid",
       "ok": true,
+      "exit_code": 0,
       "records": 4,
       "restarts": 1,
       "findings": [
@@ -242,7 +239,9 @@
     {
       "file": "restart-unknown-anchor.jsonl",
       "description": "Previous segment present, restart anchored at genesis because the producer lost its state. Allowed, reported as a restart notice.",
+      "verdict": "valid",
       "ok": true,
+      "exit_code": 0,
       "records": 3,
       "restarts": 1,
       "findings": [
@@ -265,7 +264,9 @@
     {
       "file": "restart-bad-anchor.jsonl",
       "description": "Restart anchored at record 0 although record 1 is the last of the previous segment: restart notice plus chain_break.",
+      "verdict": "invalid",
       "ok": false,
+      "exit_code": 1,
       "records": 3,
       "restarts": 1,
       "findings": [
@@ -292,7 +293,9 @@
     {
       "file": "tampered-payload.jsonl",
       "description": "Payload of record 1 changed after sealing: hash_mismatch on record 1 (content and chain hash), while record 2 still links to the declared chain_hash and is valid.",
+      "verdict": "invalid",
       "ok": false,
+      "exit_code": 1,
       "records": 3,
       "restarts": 0,
       "findings": [
@@ -317,7 +320,9 @@
       "description": "Three records signed with the TEST KEY.",
       "pubkey": "../keys/test-ed25519.pub",
       "require_signatures": true,
+      "verdict": "valid",
       "ok": true,
+      "exit_code": 0,
       "records": 3,
       "restarts": 0,
       "findings": [],
@@ -337,7 +342,9 @@
       "description": "Record 1 is signed by a different key (claiming the test key id), record 2 is unsigned. With the test public key and --require-signatures both are signature_invalid.",
       "pubkey": "../keys/test-ed25519.pub",
       "require_signatures": true,
+      "verdict": "invalid",
       "ok": false,
+      "exit_code": 1,
       "records": 3,
       "restarts": 0,
       "findings": [
@@ -364,7 +371,9 @@
     {
       "file": "schema-invalid.jsonl",
       "description": "Record 1 has an unknown producer.kind (schema_invalid, but hashes and links still check out, so record 2 is valid), record 3 is not JSON, record 4 misses most members, record 5 is a JSON object without schema. Records without stream_id or a usable seq take no part in the chain checks.",
+      "verdict": "invalid",
       "ok": false,
+      "exit_code": 1,
       "records": 6,
       "restarts": 0,
       "findings": [
@@ -405,7 +414,9 @@
     {
       "file": "multi-stream.jsonl",
       "description": "Two independent streams interleaved in one journal; each chain is verified on its own.",
+      "verdict": "valid",
       "ok": true,
+      "exit_code": 0,
       "records": 4,
       "restarts": 0,
       "findings": [],
@@ -425,7 +436,9 @@
     {
       "file": "seq-decimal.jsonl",
       "description": "Decimal seq strings beyond 2^53 and up to 2^64 - 1. Stream big counts 9007199254740991, ...992, ...993; stream max reaches 18446744073709551615. Each stream begins with a restart anchored at genesis. A verifier that compares seq as doubles reports a false seq_mismatch at ...993.",
+      "verdict": "valid",
       "ok": true,
+      "exit_code": 0,
       "records": 5,
       "restarts": 2,
       "findings": [
@@ -456,7 +469,9 @@
     {
       "file": "seq-decimal-mismatch.jsonl",
       "description": "Traps for seq arithmetic. Stream big repeats seq 9007199254740993 (as doubles both are 9007199254740992, which hides the repetition). Stream max follows 18446744073709551615 with seq 0 (uint64 arithmetic that wraps would expect 0). Both are seq_mismatch.",
+      "verdict": "invalid",
       "ok": false,
+      "exit_code": 1,
       "records": 5,
       "restarts": 2,
       "findings": [
@@ -495,7 +510,9 @@
     {
       "file": "legacy-integer-seq.jsonl",
       "description": "Records 0 and 2 write seq as a JSON number (format 0.1), record 1 as a decimal string. All are compared as integers and verify; the number form is reported as legacy_integer_seq.",
+      "verdict": "valid",
       "ok": true,
+      "exit_code": 0,
       "records": 3,
       "restarts": 0,
       "findings": [
@@ -522,7 +539,9 @@
     {
       "file": "seq-missing.jsonl",
       "description": "Record 2 has no seq: schema_invalid, invalid, and without a position it takes no part in the chain checks. Record 3 links to record 2, which the chain therefore does not have: seq_gap, unknown. Record 4 is valid with after_unknown.",
+      "verdict": "invalid",
       "ok": false,
+      "exit_code": 1,
       "records": 5,
       "restarts": 0,
       "findings": [
@@ -557,7 +576,9 @@
     {
       "file": "seq-malformed.jsonl",
       "description": "Records 1 to 4 carry seq \"01\", \"18446744073709551616\", 1.0 and \"-1\": schema_invalid each, and none of them changes the chain state. Record 5 has seq \"1\", links to record 0 and is valid.",
+      "verdict": "invalid",
       "ok": false,
+      "exit_code": 1,
       "records": 6,
       "restarts": 0,
       "findings": [
@@ -597,8 +618,10 @@
     },
     {
       "file": "outside-scope.jsonl",
-      "description": "Records 1 and 2 name another major version (trail.evidence/2) and another format (acme.audit/1): outside_scope, not checked, no part in any chain. Record 3 is chained against the last checked record of its stream, record 0, and is valid.",
-      "ok": true,
+      "description": "Records 1 and 2 name another major version (trail.evidence/2) and another format (acme.audit/1): outside_scope, not checked, no part in any chain. Record 3 is chained against the last checked record of its stream, record 0, and is valid. Verdict incomplete, because two records were not checked.",
+      "verdict": "incomplete",
+      "ok": false,
+      "exit_code": 3,
       "records": 4,
       "restarts": 0,
       "findings": [
@@ -626,9 +649,11 @@
     },
     {
       "file": "outside-scope.jsonl",
-      "description": "The same journal with strict verification: the two records outside the scope fail it.",
-      "strict": true,
-      "ok": false,
+      "description": "The same journal with --allow-incomplete: accepted.",
+      "allow_incomplete": true,
+      "verdict": "incomplete",
+      "ok": true,
+      "exit_code": 0,
       "records": 4,
       "restarts": 0,
       "findings": [
@@ -657,7 +682,9 @@
     {
       "file": "profile-valid.jsonl",
       "description": "Three records with the profile example.measurement/1 whose payloads satisfy it (the third has an extra member, which profiles allow).",
+      "verdict": "valid",
       "ok": true,
+      "exit_code": 0,
       "records": 3,
       "restarts": 0,
       "findings": [],
@@ -674,9 +701,11 @@
     },
     {
       "file": "profile-valid.jsonl",
-      "description": "The same journal with strict verification: every profile is known and satisfied.",
-      "strict": true,
+      "description": "The same journal with --require-known-profiles: every profile is known and satisfied.",
+      "require_known_profiles": true,
+      "verdict": "valid",
       "ok": true,
+      "exit_code": 0,
       "records": 3,
       "restarts": 0,
       "findings": [],
@@ -694,7 +723,9 @@
     {
       "file": "profile-states.jsonl",
       "description": "One record per profile state. 0: known profile, payload satisfies it (valid). 1: known profile, payload violates it (profile_invalid; record invalid). 2: known name, unknown major version 2 and 3: unknown name (profile_unknown; profile state outside_scope, record still valid by its core checks). 4: no profile (none).",
+      "verdict": "invalid",
       "ok": false,
+      "exit_code": 1,
       "records": 5,
       "restarts": 0,
       "findings": [
@@ -728,8 +759,10 @@
     },
     {
       "file": "profile-unknown.jsonl",
-      "description": "Records 1 and 2 use profiles this verifier does not know. Their core checks pass, so the journal verifies; the payloads were not checked against a profile (profile_unknown).",
+      "description": "Records 1 and 2 use profiles this verifier does not know. Their core checks pass and an unknown profile does not affect the verdict: valid. The payloads were not checked against a profile (profile_unknown, profile state outside_scope).",
+      "verdict": "valid",
       "ok": true,
+      "exit_code": 0,
       "records": 3,
       "restarts": 0,
       "findings": [
@@ -755,9 +788,42 @@
     },
     {
       "file": "profile-unknown.jsonl",
-      "description": "The same journal with strict verification: a profile that was not checked fails it.",
-      "strict": true,
+      "description": "The same journal with --require-known-profiles: records with an unknown profile make it incomplete, which fails (exit code 3).",
+      "require_known_profiles": true,
+      "verdict": "incomplete",
       "ok": false,
+      "exit_code": 3,
+      "records": 3,
+      "restarts": 0,
+      "findings": [
+        {
+          "index": 1,
+          "class": "profile_unknown"
+        },
+        {
+          "index": 2,
+          "class": "profile_unknown"
+        }
+      ],
+      "states": [
+        "valid",
+        "valid",
+        "valid"
+      ],
+      "profile_states": [
+        "valid",
+        "outside_scope",
+        "outside_scope"
+      ]
+    },
+    {
+      "file": "profile-unknown.jsonl",
+      "description": "With --require-known-profiles and --allow-incomplete: --allow-incomplete does not accept unknown profiles that --require-known-profiles asks for, so it still fails (exit code 3).",
+      "allow_incomplete": true,
+      "require_known_profiles": true,
+      "verdict": "incomplete",
+      "ok": false,
+      "exit_code": 3,
       "records": 3,
       "restarts": 0,
       "findings": [
@@ -784,7 +850,9 @@
     {
       "file": "profile-tampered.jsonl",
       "description": "Record 1: the measured value was edited after sealing; the payload still satisfies the profile, the hashes do not (hash_mismatch, invalid, profile valid). Record 2: the profile member was changed to an unknown major version to avoid the profile check; profile is part of the core, so chain_hash no longer matches (hash_mismatch, invalid, profile_unknown). Record 3 links to the declared chain_hash and is valid.",
+      "verdict": "invalid",
       "ok": false,
+      "exit_code": 1,
       "records": 4,
       "restarts": 0,
       "findings": [

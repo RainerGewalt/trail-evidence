@@ -14,6 +14,11 @@ records comes from a real deployment.
 The `reason_code` values come from the catalog in
 [`docs/REASON_CODES.md`](../docs/REASON_CODES.md).
 
+[`tampered/`](tampered/README.md) holds four manipulated copies of
+`transfer-worker.jsonl`, one per error class (`hash_mismatch`,
+`chain_break`, `seq_gap`, `signature_invalid`), with the findings a verifier
+must report.
+
 Verify any of them:
 
 ```bash

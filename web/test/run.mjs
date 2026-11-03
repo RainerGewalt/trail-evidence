@@ -27,6 +27,7 @@ const ROOT = path.resolve(HERE, "..", "..");
 const VECTORS = path.join(ROOT, "testdata", "vectors.json");
 const STREAMS = path.join(ROOT, "testdata", "streams");
 const EXAMPLES = path.join(ROOT, "examples");
+const TAMPERED = path.join(EXAMPLES, "tampered");
 const WEB_EXAMPLES = path.join(ROOT, "web", "examples");
 
 const read = (p) => readFileSync(p, "utf8");
@@ -229,14 +230,13 @@ async function testSignedVector() {
   }
 }
 
-async function testStreams() {
-  section("testdata/streams/expected.json");
-  const index = JSON.parse(read(path.join(STREAMS, "expected.json")));
+async function checkIndex(dir) {
+  const index = JSON.parse(read(path.join(dir, "expected.json")));
   check(index.cases.length > 0, "cases present");
   for (const c of index.cases) {
     let publicKey = null;
-    if (c.pubkey) publicKey = te.parsePublicKey(read(path.join(STREAMS, c.pubkey)));
-    const report = await te.verifyStream(read(path.join(STREAMS, c.file)), { publicKey, requireSignatures: !!c.require_signatures });
+    if (c.pubkey) publicKey = te.parsePublicKey(read(path.join(dir, c.pubkey)));
+    const report = await te.verifyStream(read(path.join(dir, c.file)), { publicKey, requireSignatures: !!c.require_signatures });
     check(report.signature_check !== "unavailable", `${c.file}: signatures were checked`);
     eq(report.ok, c.ok, `${c.file}: ok (${te.summary(report)})`);
     eq(report.records, c.records, `${c.file}: records`);
@@ -248,7 +248,13 @@ async function testStreams() {
     }
     eq(got, c.findings.map((f) => `${f.index}:${f.class}`), `${c.file}: distinct (index, class) findings`);
   }
-  console.log(`  ${index.cases.length} stream fixtures agree`);
+  return index.cases.length;
+}
+
+async function testStreams() {
+  section("testdata/streams/expected.json");
+  const n = await checkIndex(STREAMS);
+  console.log(`  ${n} stream fixtures agree`);
   // Summary lines must read exactly like the Go and Python CLIs.
   const pub = te.parsePublicKey(read(path.join(ROOT, "testdata", "keys", "test-ed25519.pub")));
   const lines = [
@@ -276,8 +282,12 @@ async function testExamples() {
     check(report.ok, `${name}: ${te.summary(report)}`);
     check(report.records >= 3 && report.records <= 5, `${name}: 3 to 5 records`);
   }
-  const copy = "transfer-worker.jsonl";
-  eq(read(path.join(WEB_EXAMPLES, copy)), read(path.join(EXAMPLES, copy)), `web/examples/${copy} is identical to examples/${copy}`);
+  for (const copy of ["transfer-worker.jsonl", "tampered/hash-mismatch.jsonl"]) {
+    eq(read(path.join(WEB_EXAMPLES, copy)), read(path.join(EXAMPLES, copy)), `web/examples/${copy} is identical to examples/${copy}`);
+  }
+  section("examples/tampered/expected.json");
+  const n = await checkIndex(TAMPERED);
+  console.log(`  ${n} tampered examples agree`);
 }
 
 async function testSchemaGate() {

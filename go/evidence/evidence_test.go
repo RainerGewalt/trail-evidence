@@ -172,7 +172,17 @@ type streamIndex struct {
 }
 
 func TestStreamFixtures(t *testing.T) {
-	dir := filepath.Join(repoRoot, "testdata", "streams")
+	checkIndex(t, filepath.Join(repoRoot, "testdata", "streams"))
+}
+
+// TestTamperedExamples checks examples/tampered against its expected.json:
+// one manipulated copy of the transfer-worker journal per error class.
+func TestTamperedExamples(t *testing.T) {
+	checkIndex(t, filepath.Join(repoRoot, "examples", "tampered"))
+}
+
+func checkIndex(t *testing.T, dir string) {
+	t.Helper()
 	raw, err := os.ReadFile(filepath.Join(dir, "expected.json"))
 	if err != nil {
 		t.Fatal(err)

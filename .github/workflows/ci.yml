@@ -113,7 +113,7 @@ jobs:
       - name: schema file is itself valid
         run: check-jsonschema --check-metaschema schema/trail-evidence-1.schema.json
       - name: examples, fixtures and vectors
-        run: scripts/validate_schema.py --vectors testdata/vectors.json examples/*.jsonl testdata/streams/valid-chain.jsonl testdata/streams/restart.jsonl testdata/streams/signed.jsonl testdata/streams/multi-stream.jsonl
+        run: scripts/validate_schema.py --vectors testdata/vectors.json examples/*.jsonl examples/tampered/*.jsonl testdata/streams/valid-chain.jsonl testdata/streams/restart.jsonl testdata/streams/signed.jsonl testdata/streams/multi-stream.jsonl
       - name: reason code catalog
         run: |
           check-jsonschema --check-metaschema schema/reason-codes.schema.json

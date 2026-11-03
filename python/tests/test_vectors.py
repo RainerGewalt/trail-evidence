@@ -68,15 +68,21 @@ class Vectors(unittest.TestCase):
 
 class StreamFixtures(unittest.TestCase):
     def test_expected_findings(self):
-        with open(os.path.join(STREAMS, "expected.json"), "r", encoding="utf-8") as fh:
+        self.check_index(STREAMS)
+
+    def test_tampered_examples(self):
+        self.check_index(os.path.join(EXAMPLES, "tampered"))
+
+    def check_index(self, directory):
+        with open(os.path.join(directory, "expected.json"), "r", encoding="utf-8") as fh:
             index = json.load(fh)
         self.assertTrue(index["cases"])
         for case in index["cases"]:
             with self.subTest(case["file"]):
                 pub = None
                 if case.get("pubkey"):
-                    pub = parse_public_key(os.path.join(STREAMS, case["pubkey"]))
-                with open(os.path.join(STREAMS, case["file"]), "r", encoding="utf-8") as fh:
+                    pub = parse_public_key(os.path.join(directory, case["pubkey"]))
+                with open(os.path.join(directory, case["file"]), "r", encoding="utf-8") as fh:
                     report = verify_stream(fh, pub, case.get("require_signatures", False))
                 self.assertEqual(report.ok, case["ok"], report.summary())
                 self.assertEqual(report.records, case["records"])

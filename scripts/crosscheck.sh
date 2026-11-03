@@ -47,17 +47,19 @@ PYTHONPATH=python "$PY" -m trail_evidence check-vectors "$TMP/vectors.go.json"
 
 echo "== 3. JavaScript (web/verify.js) reproduces every vector and fixture"
 "$NODE" web/test/run.mjs
-if ! cmp -s web/examples/transfer-worker.jsonl examples/transfer-worker.jsonl; then
-  echo "FAIL: web/examples/transfer-worker.jsonl differs from examples/transfer-worker.jsonl" >&2
-  exit 1
-fi
+for copy in transfer-worker.jsonl tampered/hash-mismatch.jsonl; do
+  if ! cmp -s "web/examples/$copy" "examples/$copy"; then
+    echo "FAIL: web/examples/$copy differs from examples/$copy" >&2
+    exit 1
+  fi
+done
 
 echo "== 4. All verifiers agree on fixtures and examples"
 GOBIN="$TMP/trail-evidence"
 (cd go && go build -o "$GOBIN" ./cmd/trail-evidence)
 PUB=testdata/keys/test-ed25519.pub
 mismatch=0
-for f in examples/*.jsonl testdata/streams/*.jsonl; do
+for f in examples/*.jsonl examples/tampered/*.jsonl testdata/streams/*.jsonl; do
   for mode in plain signed; do
     if [ "$mode" = signed ]; then flags=(--pubkey "$PUB" --require-signatures); else flags=(); fi
     set +e

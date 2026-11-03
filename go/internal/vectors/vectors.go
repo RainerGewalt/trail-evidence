@@ -87,6 +87,9 @@ type Output struct {
 	Vectors  File
 	Streams  []StreamCase
 	Examples []Journal
+	// Tampered are manipulated copies of examples/transfer-worker.jsonl,
+	// one per error class, written to examples/tampered/.
+	Tampered []StreamCase
 }
 
 func mustKey() ed25519.PrivateKey {
@@ -274,6 +277,7 @@ func Build() Output {
 
 	out.Streams = buildStreams(priv)
 	out.Examples = buildExamples()
+	out.Tampered = buildTampered(priv)
 	return out
 }
 
@@ -404,10 +408,9 @@ func buildStreams(priv ed25519.PrivateKey) []StreamCase {
 	return cases
 }
 
-func buildExamples() []Journal {
-	var out []Journal
-
-	// transfer-worker
+// transferWorker returns the sealed records of examples/transfer-worker.jsonl.
+// Every call builds fresh records, so callers may modify them.
+func transferWorker() []*evidence.Record {
 	tw := func(seq uint64, at, job, payload string) *evidence.Record {
 		r := base(evidence.ProducerTransferWorker, "worker-01", "worker-01", seq, "transfer.job.result", at, payload)
 		r.Producer.Version = "0.3.1"
@@ -424,7 +427,14 @@ func buildExamples() []Journal {
 	}
 	t[2].Redaction = nil
 	sealChain(t)
-	out = append(out, Journal{File: "transfer-worker.jsonl", Lines: lines(t...)})
+	return t
+}
+
+func buildExamples() []Journal {
+	var out []Journal
+
+	// transfer-worker
+	out = append(out, Journal{File: "transfer-worker.jsonl", Lines: lines(transferWorker()...)})
 
 	// source-bridge
 	sb := func(seq uint64, at, occurred, ev, payload, ctx string) *evidence.Record {
@@ -496,6 +506,74 @@ func buildExamples() []Journal {
 	return out
 }
 
+// The manipulation all tampered examples share: the failed job (record 2 of
+// examples/transfer-worker.jsonl) is rewritten to look successful.
+const (
+	failedJob = `"status":"failed","error":"source not found","reason_code":"transfer.source_not_found","files":0`
+	forgedJob = `"status":"ok","reason_code":"transfer.completed","files":1`
+)
+
+func forge(s string) string {
+	out := strings.Replace(s, failedJob, forgedJob, 1)
+	if out == s {
+		panic("forge: failed job not found")
+	}
+	return out
+}
+
+// buildTampered derives one manipulated journal per error class from the
+// transfer-worker example. Each file triggers exactly one finding class.
+func buildTampered(priv ed25519.PrivateKey) []StreamCase {
+	var cases []StreamCase
+
+	// hash_mismatch: record 2 edited in the file, hashes left as they were.
+	t := transferWorker()
+	hl := lines(t...)
+	hl[2] = forge(hl[2])
+	cases = append(cases, StreamCase{File: "hash-mismatch.jsonl",
+		Description: "Record 2, a failed job, was edited in the file to read status ok. Its content_hash and chain_hash were left alone, so both no longer match: hash_mismatch on record 2. Record 3 still links to the declared chain_hash, so the chain itself is not reported as broken.",
+		OK:          false, Records: 4, Findings: []ExpectedFinding{{Index: 2, Class: evidence.ClassHashMismatch}}, Lines: hl})
+
+	// chain_break: record 2 edited and re-sealed; record 3 still links to the original.
+	t = transferWorker()
+	forged := *t[2]
+	forged.Payload = json.RawMessage(forge(string(t[2].Payload)))
+	seal(&forged, t[1].ChainHash)
+	cases = append(cases, StreamCase{File: "chain-break.jsonl",
+		Description: "Record 2 was edited the same way and then re-sealed: its hashes are recomputed and consistent. Record 3 still carries the prev_hash of the original record 2, so the link from 3 to 2 fails: chain_break on record 3.",
+		OK:          false, Records: 4, Findings: []ExpectedFinding{{Index: 3, Class: evidence.ClassChainBreak}}, Lines: lines(t[0], t[1], &forged, t[3])})
+
+	// seq_gap: record 2 deleted, record 3 re-sealed to link to record 1.
+	t = transferWorker()
+	relinked := *t[3]
+	seal(&relinked, t[1].ChainHash)
+	cases = append(cases, StreamCase{File: "seq-gap.jsonl",
+		Description: "Record 2, the failed job, was deleted and record 3 re-sealed so that it links to record 1. Every hash and link checks out, but seq jumps from 1 to 3: seq_gap on the record that is now at index 2.",
+		OK:          false, Records: 3, Findings: []ExpectedFinding{{Index: 2, Class: evidence.ClassSeqGap}}, Lines: lines(t[0], t[1], &relinked)})
+
+	// signature_invalid: signed journal, record 2 edited, records 2 and 3
+	// re-sealed so the chain is intact, the original signatures kept.
+	t = transferWorker()
+	for _, r := range t {
+		if err := evidence.Sign(r, priv, ""); err != nil {
+			panic(err)
+		}
+	}
+	sForged := *t[2]
+	sForged.Payload = json.RawMessage(forge(string(t[2].Payload)))
+	seal(&sForged, t[1].ChainHash)
+	sForged.Signature = t[2].Signature
+	sNext := *t[3]
+	seal(&sNext, sForged.ChainHash)
+	sNext.Signature = t[3].Signature
+	cases = append(cases, StreamCase{File: "signature-invalid.jsonl",
+		Description: "The journal was signed with the TEST KEY. Record 2 was edited and records 2 and 3 were re-sealed, so every hash, link and seq checks out and verification without a key passes. The signatures were copied from the originals and cover the old chain_hash values: with the test public key, signature_invalid on records 2 and 3.",
+		PublicKey:   "../../testdata/keys/test-ed25519.pub", RequireSignatures: true,
+		OK: false, Records: 4, Findings: []ExpectedFinding{{Index: 2, Class: evidence.ClassSignatureInvalid}, {Index: 3, Class: evidence.ClassSignatureInvalid}}, Lines: lines(t[0], t[1], &sForged, &sNext)})
+
+	return cases
+}
+
 func sealChain(recs []*evidence.Record) {
 	prev := evidence.GenesisHash
 	for _, r := range recs {
@@ -525,8 +603,17 @@ type StreamIndex struct {
 
 // MarshalStreamIndex renders testdata/streams/expected.json.
 func MarshalStreamIndex(cases []StreamCase) []byte {
+	return marshalIndex("Each case names a JSON Lines fixture and the verdict a verifier must reach. findings lists the distinct (index, class) pairs in order of first occurrence; index counts non-empty lines from 0. pubkey paths are relative to this file.", cases)
+}
+
+// MarshalTamperedIndex renders examples/tampered/expected.json.
+func MarshalTamperedIndex(cases []StreamCase) []byte {
+	return marshalIndex("Manipulated copies of examples/transfer-worker.jsonl, one per error class, and the verdict a verifier must reach. Same format as testdata/streams/expected.json: findings lists the distinct (index, class) pairs in order of first occurrence; pubkey paths are relative to this file.", cases)
+}
+
+func marshalIndex(note string, cases []StreamCase) []byte {
 	idx := StreamIndex{
-		Note:  "Each case names a JSON Lines fixture and the verdict a verifier must reach. findings lists the distinct (index, class) pairs in order of first occurrence; index counts non-empty lines from 0. pubkey paths are relative to this file.",
+		Note:  note,
 		Cases: cases,
 	}
 	var buf bytes.Buffer
@@ -552,6 +639,10 @@ func Files(out Output) map[string][]byte {
 	}
 	for _, j := range out.Examples {
 		files["examples/"+j.File] = []byte(strings.Join(j.Lines, "\n") + "\n")
+	}
+	files["examples/tampered/expected.json"] = MarshalTamperedIndex(out.Tampered)
+	for _, c := range out.Tampered {
+		files["examples/tampered/"+c.File] = []byte(strings.Join(c.Lines, "\n") + "\n")
 	}
 	return files
 }

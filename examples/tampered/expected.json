@@ -1,0 +1,63 @@
+{
+  "note": "Manipulated copies of examples/transfer-worker.jsonl, one per error class, and the verdict a verifier must reach. Same format as testdata/streams/expected.json: findings lists the distinct (index, class) pairs in order of first occurrence; pubkey paths are relative to this file.",
+  "cases": [
+    {
+      "file": "hash-mismatch.jsonl",
+      "description": "Record 2, a failed job, was edited in the file to read status ok. Its content_hash and chain_hash were left alone, so both no longer match: hash_mismatch on record 2. Record 3 still links to the declared chain_hash, so the chain itself is not reported as broken.",
+      "ok": false,
+      "records": 4,
+      "restarts": 0,
+      "findings": [
+        {
+          "index": 2,
+          "class": "hash_mismatch"
+        }
+      ]
+    },
+    {
+      "file": "chain-break.jsonl",
+      "description": "Record 2 was edited the same way and then re-sealed: its hashes are recomputed and consistent. Record 3 still carries the prev_hash of the original record 2, so the link from 3 to 2 fails: chain_break on record 3.",
+      "ok": false,
+      "records": 4,
+      "restarts": 0,
+      "findings": [
+        {
+          "index": 3,
+          "class": "chain_break"
+        }
+      ]
+    },
+    {
+      "file": "seq-gap.jsonl",
+      "description": "Record 2, the failed job, was deleted and record 3 re-sealed so that it links to record 1. Every hash and link checks out, but seq jumps from 1 to 3: seq_gap on the record that is now at index 2.",
+      "ok": false,
+      "records": 3,
+      "restarts": 0,
+      "findings": [
+        {
+          "index": 2,
+          "class": "seq_gap"
+        }
+      ]
+    },
+    {
+      "file": "signature-invalid.jsonl",
+      "description": "The journal was signed with the TEST KEY. Record 2 was edited and records 2 and 3 were re-sealed, so every hash, link and seq checks out and verification without a key passes. The signatures were copied from the originals and cover the old chain_hash values: with the test public key, signature_invalid on records 2 and 3.",
+      "pubkey": "../../testdata/keys/test-ed25519.pub",
+      "require_signatures": true,
+      "ok": false,
+      "records": 4,
+      "restarts": 0,
+      "findings": [
+        {
+          "index": 2,
+          "class": "signature_invalid"
+        },
+        {
+          "index": 3,
+          "class": "signature_invalid"
+        }
+      ]
+    }
+  ]
+}

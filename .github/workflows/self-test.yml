@@ -1,0 +1,89 @@
+name: self-test
+
+# Runs the composite action in action.yml from the checkout (uses: ./) against
+# the example journals and the stream fixtures, and checks its outputs.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  action:
+    name: action.yml on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: examples verify
+        id: examples
+        uses: ./
+        with:
+          journal: examples/*.jsonl
+
+      - name: outputs of a passing run
+        shell: bash
+        env:
+          VERDICT: ${{ steps.examples.outputs.verdict }}
+          RECORDS: ${{ steps.examples.outputs.records }}
+          ERRORS: ${{ steps.examples.outputs.errors }}
+        run: |
+          set -euo pipefail
+          test "$VERDICT" = ok
+          test "$RECORDS" = 14
+          test "$ERRORS" = 0
+
+      - name: signed fixture with required signatures
+        id: signed
+        uses: ./
+        with:
+          journal: testdata/streams/signed.jsonl
+          pubkey: testdata/keys/test-ed25519.pub
+          require-signatures: "true"
+
+      - name: broken fixtures fail
+        id: broken
+        uses: ./
+        continue-on-error: true
+        with:
+          journal: testdata/streams/seq-gap.jsonl testdata/streams/chain-break.jsonl
+
+      - name: outputs of a failing run
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.broken.outcome }}
+          VERDICT: ${{ steps.broken.outputs.verdict }}
+          RECORDS: ${{ steps.broken.outputs.records }}
+          ERRORS: ${{ steps.broken.outputs.errors }}
+        run: |
+          set -euo pipefail
+          test "$OUTCOME" = failure
+          test "$VERDICT" = fail
+          test "$RECORDS" = 6
+          test "$ERRORS" = 2
+
+      - name: unsigned journal with required signatures fails
+        id: unsigned
+        uses: ./
+        continue-on-error: true
+        with:
+          journal: examples/transfer-worker.jsonl
+          pubkey: testdata/keys/test-ed25519.pub
+          require-signatures: "true"
+
+      - shell: bash
+        env:
+          OUTCOME: ${{ steps.unsigned.outcome }}
+          ERRORS: ${{ steps.unsigned.outputs.errors }}
+        run: |
+          set -euo pipefail
+          test "$OUTCOME" = failure
+          test "$ERRORS" = 4

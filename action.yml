@@ -1,0 +1,175 @@
+name: "trail-evidence verify"
+description: >-
+  Verify Trail Evidence journals (trail.evidence/1): recomputes content and
+  chain hashes, follows prev_hash links and seq per stream, reports restarts
+  and, with a public key, checks Ed25519 signatures. Nothing leaves the runner.
+author: Florian Przybylak
+
+branding:
+  icon: check-circle
+  color: gray-dark
+
+inputs:
+  journal:
+    description: >-
+      Path or glob of the JSON Lines journal(s) to verify, relative to the
+      workspace (for example evidence/*.jsonl or evidence/**/*.jsonl).
+    required: true
+  pubkey:
+    description: >-
+      Ed25519 public key of the producer: 64 hex characters, or a path to a
+      file holding the key as hex or PEM. Without it, signatures are counted
+      but not checked.
+    required: false
+    default: ""
+  require-signatures:
+    description: >-
+      "true" to treat unsigned records as signature_invalid. Needs pubkey.
+    required: false
+    default: "false"
+  version:
+    description: >-
+      Version of the verifier to run, as a module version (v0.1.0). Defaults to
+      the version this action was referenced with (uses: ...@v0.1.0). When the
+      action runs from a checkout (uses: ./) the verifier is built from it.
+    required: false
+    default: ""
+
+outputs:
+  verdict:
+    description: '"ok" when every journal verified without errors, otherwise "fail".'
+    value: ${{ steps.verify.outputs.verdict }}
+  records:
+    description: Total number of records over all journals.
+    value: ${{ steps.verify.outputs.records }}
+  errors:
+    description: Total number of findings with severity error over all journals.
+    value: ${{ steps.verify.outputs.errors }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@v5
+      with:
+        go-version: stable
+        cache: false
+
+    - name: Resolve the verifier
+      id: resolve
+      shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+        ACTION_REF: ${{ github.action_ref }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        bindir="$RUNNER_TEMP/trail-evidence-bin"
+        mkdir -p "$bindir"
+        bin="$bindir/trail-evidence"
+        if [ "${RUNNER_OS:-}" = "Windows" ]; then bin="$bin.exe"; fi
+
+        ver="${INPUT_VERSION:-}"
+        if [ -z "$ver" ] && [[ "${ACTION_REF:-}" == v* ]]; then ver="$ACTION_REF"; fi
+
+        if [ -n "$ver" ]; then
+          mod="github.com/RainerGewalt/trail-evidence/go/cmd/trail-evidence@$ver"
+          echo "::group::go install $mod"
+          if GOBIN="$bindir" go install "$mod"; then
+            echo "::endgroup::"
+          else
+            echo "::endgroup::"
+            # The module tag go/<ver> may lag behind the release tag; fall back
+            # to the release archive of the same version.
+            case "$(uname -s)" in
+              Linux)  os=linux ;;
+              Darwin) os=darwin ;;
+              *)      os=windows ;;
+            esac
+            case "$(uname -m)" in
+              x86_64|amd64)   arch=amd64 ;;
+              arm64|aarch64)  arch=arm64 ;;
+              *) echo "unsupported architecture $(uname -m)" >&2; exit 1 ;;
+            esac
+            plain="${ver#v}"
+            ext=tar.gz; [ "$os" = windows ] && ext=zip
+            name="trail-evidence_${plain}_${os}_${arch}.$ext"
+            base="https://github.com/RainerGewalt/trail-evidence/releases/download/$ver"
+            echo "::group::download $base/$name"
+            curl -fsSL --retry 3 -o "$bindir/$name" "$base/$name"
+            curl -fsSL --retry 3 -o "$bindir/checksums.txt" "$base/checksums.txt"
+            if command -v sha256sum >/dev/null 2>&1; then sum=(sha256sum); else sum=(shasum -a 256); fi
+            (cd "$bindir" && grep " $name\$" checksums.txt | "${sum[@]}" -c -)
+            if [ "$ext" = zip ]; then unzip -oq "$bindir/$name" -d "$bindir"; else tar -xzf "$bindir/$name" -C "$bindir"; fi
+            echo "::endgroup::"
+          fi
+        else
+          echo "::group::go build from $ACTION_PATH/go"
+          (cd "$ACTION_PATH/go" && go build -trimpath -o "$bin" ./cmd/trail-evidence)
+          echo "::endgroup::"
+        fi
+        "$bin" version
+        echo "bin=$bin" >> "$GITHUB_OUTPUT"
+
+    - name: Verify
+      id: verify
+      shell: bash
+      env:
+        BIN: ${{ steps.resolve.outputs.bin }}
+        JOURNAL: ${{ inputs.journal }}
+        PUBKEY: ${{ inputs.pubkey }}
+        REQUIRE_SIGNATURES: ${{ inputs.require-signatures }}
+      run: |
+        set -euo pipefail
+        flags=()
+        if [ -n "$PUBKEY" ]; then flags+=(--pubkey "$PUBKEY"); fi
+        if [ "$REQUIRE_SIGNATURES" = "true" ]; then
+          if [ -z "$PUBKEY" ]; then echo "require-signatures needs pubkey" >&2; exit 2; fi
+          flags+=(--require-signatures)
+        fi
+
+        shopt -s nullglob
+        shopt -s globstar 2>/dev/null || true   # bash 3.2 (macOS /bin/bash) has no **
+        files=()
+        for pattern in $JOURNAL; do
+          for f in $pattern; do files+=("$f"); done
+        done
+        if [ "${#files[@]}" -eq 0 ]; then
+          echo "::error::no journal matches '$JOURNAL'"
+          exit 2
+        fi
+
+        total_records=0; total_errors=0; failed=0
+        {
+          echo "### trail-evidence verify"
+          echo
+          echo "| Journal | Verdict | Records | Errors | Notices | Signed |"
+          echo "|---|---|---:|---:|---:|---:|"
+        } >> "$GITHUB_STEP_SUMMARY"
+        for f in "${files[@]}"; do
+          set +e
+          "$BIN" verify "$f" ${flags[@]+"${flags[@]}"} --json > "$RUNNER_TEMP/trail-evidence-report.json"
+          rc=$?
+          set -e
+          if [ "$rc" -eq 2 ]; then
+            echo "::error file=$f::trail-evidence could not read $f"
+            exit 2
+          fi
+          # tr: jq.exe on Windows ends lines with CRLF
+          read -r ok records errors notices signed < <(jq -r '[.ok, .records, .errors, .notices, .signed_records] | @tsv' "$RUNNER_TEMP/trail-evidence-report.json" | tr -d '\r')
+          total_records=$((total_records + records))
+          total_errors=$((total_errors + errors))
+          if [ "$ok" = "true" ]; then verdict=ok; else verdict=fail; failed=1; fi
+          echo "| \`$f\` | $verdict | $records | $errors | $notices | $signed |" >> "$GITHUB_STEP_SUMMARY"
+          "$BIN" verify "$f" ${flags[@]+"${flags[@]}"} | sed "s|^|$f: |" || true
+          jq -r --arg f "$f" '.findings[] | select(.severity == "error") | "::error file=\($f),line=\(.line)::\(.class): \(.message)"' "$RUNNER_TEMP/trail-evidence-report.json" | tr -d '\r'
+        done
+
+        if [ "$failed" -eq 0 ]; then verdict=ok; else verdict=fail; fi
+        {
+          echo "verdict=$verdict"
+          echo "records=$total_records"
+          echo "errors=$total_errors"
+        } >> "$GITHUB_OUTPUT"
+        echo
+        echo "verdict=$verdict records=$total_records errors=$total_errors (${#files[@]} journal(s))"
+        [ "$verdict" = ok ]

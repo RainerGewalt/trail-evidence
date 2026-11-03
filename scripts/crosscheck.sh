@@ -3,9 +3,10 @@
 # and the browser verifier (web/verify.js, run with Node) must reproduce every
 # hash byte for byte, all three verifiers must produce identical reports
 # (verdict, counts, streams, the state and profile state of every record, and
-# every finding; only the wording of messages may differ) on every stream
-# fixture, example and profile journal, with and without keys and strict
-# mode, and each must pass scripts/conformance.sh.
+# every finding; only the wording of messages may differ) and the same exit
+# code (0 valid, 1 invalid, 3 incomplete) on every stream fixture, example
+# and profile journal, with and without keys, --allow-incomplete and
+# --require-known-profiles, and each must pass scripts/conformance.sh.
 #
 # Usage: scripts/crosscheck.sh            (picks the newest python3 >= 3.9)
 #        PYTHON=python3.12 NODE=node scripts/crosscheck.sh
@@ -66,11 +67,12 @@ GOBIN="$TMP/trail-evidence"
 PUB=testdata/keys/test-ed25519.pub
 mismatch=0
 for f in examples/*.jsonl examples/tampered/*.jsonl testdata/streams/*.jsonl profiles/*/*.journal.jsonl; do
-  for mode in plain signed strict; do
+  for mode in plain signed allow-incomplete require-known-profiles; do
     case "$mode" in
-      signed) flags=(--pubkey "$PUB" --require-signatures) ;;
-      strict) flags=(--strict) ;;
-      *)      flags=() ;;
+      signed)                 flags=(--pubkey "$PUB" --require-signatures) ;;
+      allow-incomplete)       flags=(--allow-incomplete) ;;
+      require-known-profiles) flags=(--require-known-profiles) ;;
+      *)                      flags=() ;;
     esac
     set +e
     "$GOBIN" verify "$f" "${flags[@]}" --json > "$TMP/go.json"; gorc=$?
@@ -84,7 +86,8 @@ g = json.load(open(sys.argv[1])); gorc = sys.argv[2]
 f, mode = sys.argv[3], sys.argv[4]
 def shape(r):
     return {
-        "ok": r["ok"], "strict": r["strict"], "records": r["records"], "errors": r["errors"], "restarts": r["restarts"],
+        "ok": r["ok"], "verdict": r["verdict"], "allow_incomplete": r["allow_incomplete"],
+        "require_known_profiles": r["require_known_profiles"], "records": r["records"], "errors": r["errors"], "restarts": r["restarts"],
         "notices": r["notices"], "signed": r["signed_records"], "verified": r["signatures_verified"], "unsigned": r["unsigned_records"],
         "states": r["states"], "profile_states": r["profile_states"],
         "streams": r["streams"],
@@ -105,7 +108,7 @@ for i in range(0, len(others), 3):
                 print(f"  {k}: go={sg[k]} {label}={so[k]}")
 if bad:
     sys.exit(1)
-print(f"ok: {f} [{mode}] ok={sg['ok']} findings={len(sg['findings'])} rc={gorc} (go, python, javascript)")
+print(f"ok: {f} [{mode}] verdict={sg['verdict']} ok={sg['ok']} findings={len(sg['findings'])} rc={gorc} (go, python, javascript)")
 PYEOF
   done
 done

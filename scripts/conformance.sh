@@ -21,11 +21,13 @@
 #       chain_hash, state and profile_state of the record on its own, and,
 #       when the record has findings on its own, findings:
 #       [{"class": ..., "severity": "error"|"notice"}, ...]
-#   <cmd> verify <journal.jsonl> [--pubkey <file>] [--require-signatures] [--strict] --json
-#       prints the report as JSON with ok, records, restarts, findings:
-#       [{"index": ..., "class": ..., ...}, ...] and results:
+#   <cmd> verify <journal.jsonl> [--pubkey <file>] [--require-signatures]
+#                [--allow-incomplete] [--require-known-profiles] --json
+#       prints the report as JSON with ok, verdict, records, restarts,
+#       findings: [{"index": ..., "class": ..., ...}, ...] and results:
 #       [{"index": ..., "state": ..., "profile_state": ...}, ...];
-#       exit 0 when ok, 1 when not
+#       exit 0 when ok, 1 when the verdict is invalid, 3 when it is
+#       incomplete and not allowed
 #
 # The script needs python3 (3.6 or newer, standard library only) for its own
 # bookkeeping; set PYTHON to choose one. Exit 0: conformant. Exit 1: at least
@@ -172,7 +174,8 @@ try:
         index = json.load(fh)
     print("== stream fixtures (%s)" % os.path.relpath(os.path.join(streams_dir, "expected.json"), root))
     for c in index["cases"]:
-        name = c["file"] + (" [strict]" if c.get("strict") else "")
+        name = c["file"] + (" [allow-incomplete]" if c.get("allow_incomplete") else "") \
+            + (" [require-known-profiles]" if c.get("require_known_profiles") else "")
         label = name
         if c["file"] in MANDATORY_STREAMS:
             label += "  [mandatory: %s]" % MANDATORY_STREAMS[c["file"]]
@@ -181,8 +184,10 @@ try:
             args += ["--pubkey", os.path.normpath(os.path.join(streams_dir, c["pubkey"]))]
         if c.get("require_signatures"):
             args.append("--require-signatures")
-        if c.get("strict"):
-            args.append("--strict")
+        if c.get("allow_incomplete"):
+            args.append("--allow-incomplete")
+        if c.get("require_known_profiles"):
+            args.append("--require-known-profiles")
         args.append("--json")
         rc, out, err = run(args)
         rep, problem = parse(out, err, "verify")
@@ -190,10 +195,9 @@ try:
         if problem:
             bad.append(problem)
         else:
-            want_rc = 0 if c["ok"] else 1
-            if rc != want_rc:
-                bad.append("exit code %d, expected %d" % (rc, want_rc))
-            for key in ("ok", "records", "restarts"):
+            if rc != c["exit_code"]:
+                bad.append("exit code %d, expected %d" % (rc, c["exit_code"]))
+            for key in ("ok", "verdict", "records", "restarts"):
                 if rep.get(key) != c[key]:
                     bad.append("%s %r, expected %r" % (key, rep.get(key), c[key]))
             got = []

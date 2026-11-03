@@ -37,7 +37,7 @@ jobs:
           ERRORS: ${{ steps.examples.outputs.errors }}
         run: |
           set -euo pipefail
-          test "$VERDICT" = ok
+          test "$VERDICT" = valid
           test "$RECORDS" = 14
           test "$ERRORS" = 0
 
@@ -66,36 +66,62 @@ jobs:
         run: |
           set -euo pipefail
           test "$OUTCOME" = failure
-          test "$VERDICT" = fail
+          test "$VERDICT" = invalid
           test "$RECORDS" = 6
           test "$ERRORS" = 2
 
-      - name: a gap leaves a record unknown, which passes without strict
+      - name: a gap makes the journal incomplete, which fails by default
         id: gap
-        uses: ./
-        with:
-          journal: testdata/streams/seq-gap.jsonl
-
-      - name: and fails with strict
-        id: gap-strict
         uses: ./
         continue-on-error: true
         with:
           journal: testdata/streams/seq-gap.jsonl
-          strict: "true"
+
+      - name: and passes with allow-incomplete
+        id: gap-allowed
+        uses: ./
+        with:
+          journal: testdata/streams/seq-gap.jsonl
+          allow-incomplete: "true"
 
       - shell: bash
         env:
+          OUTCOME: ${{ steps.gap.outcome }}
           VERDICT: ${{ steps.gap.outputs.verdict }}
-          OUTCOME: ${{ steps.gap-strict.outcome }}
-          STRICT_VERDICT: ${{ steps.gap-strict.outputs.verdict }}
-          STRICT_ERRORS: ${{ steps.gap-strict.outputs.errors }}
+          ERRORS: ${{ steps.gap.outputs.errors }}
+          ALLOWED_VERDICT: ${{ steps.gap-allowed.outputs.verdict }}
         run: |
           set -euo pipefail
-          test "$VERDICT" = ok
           test "$OUTCOME" = failure
-          test "$STRICT_VERDICT" = fail
-          test "$STRICT_ERRORS" = 1
+          test "$VERDICT" = incomplete
+          test "$ERRORS" = 0
+          test "$ALLOWED_VERDICT" = incomplete
+
+      - name: an unknown profile does not change the verdict
+        id: profiles
+        uses: ./
+        with:
+          journal: testdata/streams/profile-unknown.jsonl
+
+      - name: unless require-known-profiles is set
+        id: profiles-required
+        uses: ./
+        continue-on-error: true
+        with:
+          journal: testdata/streams/profile-unknown.jsonl
+          require-known-profiles: "true"
+          allow-incomplete: "true"
+
+      - shell: bash
+        env:
+          VERDICT: ${{ steps.profiles.outputs.verdict }}
+          OUTCOME: ${{ steps.profiles-required.outcome }}
+          REQUIRED_VERDICT: ${{ steps.profiles-required.outputs.verdict }}
+        run: |
+          set -euo pipefail
+          test "$VERDICT" = valid
+          test "$OUTCOME" = failure
+          test "$REQUIRED_VERDICT" = incomplete
 
       - name: unsigned journal with required signatures fails
         id: unsigned

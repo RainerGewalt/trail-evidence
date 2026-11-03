@@ -48,7 +48,7 @@ jobs:
       - run: python -m unittest discover -s tests -v
       - run: python -m trail_evidence verify ../examples/transfer-worker.jsonl
       - run: python -m trail_evidence verify ../testdata/streams/signed.jsonl --pubkey ../testdata/keys/test-ed25519.pub --require-signatures
-      - run: python -m trail_evidence verify ../profiles/example.measurement/1.journal.jsonl --strict
+      - run: python -m trail_evidence verify ../profiles/example.measurement/1.journal.jsonl --require-known-profiles
 
   python-package:
     name: Python package (sdist and wheel, no upload)
@@ -69,7 +69,7 @@ jobs:
       - name: installed package carries the profile registry
         run: |
           "$RUNNER_TEMP/venv/bin/trail-evidence-py" profiles | grep -qx 'example.measurement/1'
-          "$RUNNER_TEMP/venv/bin/trail-evidence-py" verify profiles/example.measurement/1.journal.jsonl --strict
+          "$RUNNER_TEMP/venv/bin/trail-evidence-py" verify profiles/example.measurement/1.journal.jsonl --require-known-profiles
 
   web:
     name: Browser verifier (Node ${{ matrix.node }})
@@ -85,7 +85,7 @@ jobs:
       - run: node web/test/run.mjs
       - run: node web/test/run.mjs report examples/transfer-worker.jsonl
       - run: node web/test/run.mjs report testdata/streams/signed.jsonl --pubkey testdata/keys/test-ed25519.pub --require-signatures
-      - run: node web/test/run.mjs report profiles/example.measurement/1.journal.jsonl --strict
+      - run: node web/test/run.mjs report profiles/example.measurement/1.journal.jsonl --require-known-profiles
 
   crosscheck:
     name: Go vs Python vs JavaScript crosscheck

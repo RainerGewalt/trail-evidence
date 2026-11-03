@@ -28,12 +28,19 @@ inputs:
       "true" to treat unsigned records as signature_invalid. Needs pubkey.
     required: false
     default: "false"
-  strict:
+  allow-incomplete:
     description: >-
-      "true" to fail also on records in state unknown (predecessor not in the
-      journal) or outside_scope (another format or major version), and on
-      profiles the verifier does not know. Without it those are counted and
-      reported, and only invalid records fail the step.
+      "true" to accept the verdict incomplete: records in state unknown
+      (predecessor not in the journal) or outside_scope (another format or
+      major version) do not fail the step. Only for journals known to be
+      incomplete, such as rotated logs; a deleted record also makes a
+      journal incomplete.
+    required: false
+    default: "false"
+  require-known-profiles:
+    description: >-
+      "true" to count records whose profile the verifier does not know as
+      incomplete. allow-incomplete does not accept those.
     required: false
     default: "false"
   version:
@@ -46,13 +53,16 @@ inputs:
 
 outputs:
   verdict:
-    description: '"ok" when every journal verified without errors, otherwise "fail".'
+    description: >-
+      "invalid" when any journal has an invalid record, otherwise
+      "incomplete" when any journal is incomplete (also when allowed),
+      otherwise "valid".
     value: ${{ steps.verify.outputs.verdict }}
   records:
     description: Total number of records over all journals.
     value: ${{ steps.verify.outputs.records }}
   errors:
-    description: Total number of findings with severity error over all journals.
+    description: Total number of findings with severity error (invalid records) over all journals.
     value: ${{ steps.verify.outputs.errors }}
 
 runs:
@@ -127,7 +137,8 @@ runs:
         JOURNAL: ${{ inputs.journal }}
         PUBKEY: ${{ inputs.pubkey }}
         REQUIRE_SIGNATURES: ${{ inputs.require-signatures }}
-        STRICT: ${{ inputs.strict }}
+        ALLOW_INCOMPLETE: ${{ inputs.allow-incomplete }}
+        REQUIRE_KNOWN_PROFILES: ${{ inputs.require-known-profiles }}
       run: |
         set -euo pipefail
         flags=()
@@ -136,7 +147,8 @@ runs:
           if [ -z "$PUBKEY" ]; then echo "require-signatures needs pubkey" >&2; exit 2; fi
           flags+=(--require-signatures)
         fi
-        if [ "$STRICT" = "true" ]; then flags+=(--strict); fi
+        if [ "$ALLOW_INCOMPLETE" = "true" ]; then flags+=(--allow-incomplete); fi
+        if [ "$REQUIRE_KNOWN_PROFILES" = "true" ]; then flags+=(--require-known-profiles); fi
 
         shopt -s nullglob
         shopt -s globstar 2>/dev/null || true   # bash 3.2 (macOS /bin/bash) has no **
@@ -149,11 +161,12 @@ runs:
           exit 2
         fi
 
-        total_records=0; total_errors=0; failed=0
+        total_records=0; total_errors=0; failed=0; any_invalid=0; any_incomplete=0
         {
           echo "### trail-evidence verify"
           echo
-          if [ "$STRICT" = "true" ]; then echo "Strict: unknown and outside_scope records and unknown profiles fail."; echo; fi
+          if [ "$ALLOW_INCOMPLETE" = "true" ]; then echo "allow-incomplete: incomplete journals are accepted."; echo; fi
+          if [ "$REQUIRE_KNOWN_PROFILES" = "true" ]; then echo "require-known-profiles: records with an unknown profile make a journal incomplete."; echo; fi
           echo "| Journal | Verdict | Records | Invalid | Unknown | Outside scope | Errors | Notices | Signed |"
           echo "|---|---|---:|---:|---:|---:|---:|---:|---:|"
         } >> "$GITHUB_STEP_SUMMARY"
@@ -167,16 +180,23 @@ runs:
             exit 2
           fi
           # tr: jq.exe on Windows ends lines with CRLF
-          read -r ok records errors notices signed invalid unknown outside < <(jq -r '[.ok, .records, .errors, .notices, .signed_records, .states.invalid, .states.unknown, .states.outside_scope] | @tsv' "$RUNNER_TEMP/trail-evidence-report.json" | tr -d '\r')
+          read -r ok jverdict records errors notices signed invalid unknown outside < <(jq -r '[.ok, .verdict, .records, .errors, .notices, .signed_records, .states.invalid, .states.unknown, .states.outside_scope] | @tsv' "$RUNNER_TEMP/trail-evidence-report.json" | tr -d '\r')
           total_records=$((total_records + records))
           total_errors=$((total_errors + errors))
-          if [ "$ok" = "true" ]; then verdict=ok; else verdict=fail; failed=1; fi
+          verdict="$jverdict"
+          case "$jverdict" in
+            invalid)    any_invalid=1 ;;
+            incomplete) any_incomplete=1; if [ "$ok" = "true" ]; then verdict="incomplete (allowed)"; fi ;;
+          esac
+          if [ "$ok" != "true" ]; then failed=1; fi
           echo "| \`$f\` | $verdict | $records | $invalid | $unknown | $outside | $errors | $notices | $signed |" >> "$GITHUB_STEP_SUMMARY"
           "$BIN" verify "$f" ${flags[@]+"${flags[@]}"} | sed "s|^|$f: |" || true
           jq -r --arg f "$f" '.findings[] | select(.severity == "error") | "::error file=\($f),line=\(.line)::\(.class): \(.message)"' "$RUNNER_TEMP/trail-evidence-report.json" | tr -d '\r'
         done
 
-        if [ "$failed" -eq 0 ]; then verdict=ok; else verdict=fail; fi
+        if [ "$any_invalid" -eq 1 ]; then verdict=invalid
+        elif [ "$any_incomplete" -eq 1 ]; then verdict=incomplete
+        else verdict=valid; fi
         {
           echo "verdict=$verdict"
           echo "records=$total_records"
@@ -184,4 +204,7 @@ runs:
         } >> "$GITHUB_OUTPUT"
         echo
         echo "verdict=$verdict records=$total_records errors=$total_errors (${#files[@]} journal(s))"
-        [ "$verdict" = ok ]
+        # Same exit codes as the verifier: 1 invalid, 3 incomplete and not allowed.
+        if [ "$failed" -eq 0 ]; then exit 0; fi
+        if [ "$any_invalid" -eq 1 ]; then exit 1; fi
+        exit 3

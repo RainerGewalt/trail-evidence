@@ -54,7 +54,7 @@ jobs:
         uses: ./
         continue-on-error: true
         with:
-          journal: testdata/streams/seq-gap.jsonl testdata/streams/chain-break.jsonl
+          journal: testdata/streams/seq-mismatch.jsonl testdata/streams/chain-break.jsonl
 
       - name: outputs of a failing run
         shell: bash
@@ -69,6 +69,33 @@ jobs:
           test "$VERDICT" = fail
           test "$RECORDS" = 6
           test "$ERRORS" = 2
+
+      - name: a gap leaves a record unknown, which passes without strict
+        id: gap
+        uses: ./
+        with:
+          journal: testdata/streams/seq-gap.jsonl
+
+      - name: and fails with strict
+        id: gap-strict
+        uses: ./
+        continue-on-error: true
+        with:
+          journal: testdata/streams/seq-gap.jsonl
+          strict: "true"
+
+      - shell: bash
+        env:
+          VERDICT: ${{ steps.gap.outputs.verdict }}
+          OUTCOME: ${{ steps.gap-strict.outcome }}
+          STRICT_VERDICT: ${{ steps.gap-strict.outputs.verdict }}
+          STRICT_ERRORS: ${{ steps.gap-strict.outputs.errors }}
+        run: |
+          set -euo pipefail
+          test "$VERDICT" = ok
+          test "$OUTCOME" = failure
+          test "$STRICT_VERDICT" = fail
+          test "$STRICT_ERRORS" = 1
 
       - name: unsigned journal with required signatures fails
         id: unsigned

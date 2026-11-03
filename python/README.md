@@ -17,7 +17,7 @@ pip install trail-evidence
 
 trail-evidence-py verify journal.jsonl
 trail-evidence-py verify journal.jsonl --pubkey <64 hex chars or file> --require-signatures
-trail-evidence-py verify journal.jsonl --strict
+trail-evidence-py verify journal.jsonl --allow-incomplete
 trail-evidence-py verify journal.jsonl --json
 trail-evidence-py hash record.json
 trail-evidence-py profiles
@@ -25,10 +25,12 @@ trail-evidence-py profiles
 
 Every record gets a state: `valid`, `invalid`, `unknown` (its predecessor is
 not in the file) or `outside_scope` (another format or major version), and a
-profile state. A journal verifies when no record is `invalid`; `--strict`
-also fails on `unknown` and `outside_scope` records and on profiles the
-verifier does not know. Exit codes: 0 verified, 1 findings with severity
-error, 2 usage or I/O error. `python -m trail_evidence` is the same CLI.
+profile state. The journal gets the verdict `valid` (exit code 0), `invalid`
+(1) or `incomplete` (3: no record invalid, but one unknown or outside the
+scope). `--allow-incomplete` accepts incomplete journals (exit code 0), for
+logs known to be incomplete such as rotated ones; `--require-known-profiles`
+counts records with an unknown profile as incomplete. Exit code 2 is a usage
+or I/O error. `python -m trail_evidence` is the same CLI.
 
 ```python
 from trail_evidence import seal, sign, verify_stream, GENESIS_HASH, NO_POLICY
@@ -44,8 +46,8 @@ record = {
 seal(record, GENESIS_HASH)
 sign(record, seed_bytes)            # optional
 with open("journal.jsonl") as fh:
-    report = verify_stream(fh, public_key_bytes, strict=True)
-print(report.summary())
+    report = verify_stream(fh, public_key_bytes)
+print(report.summary(), report.verdict, report.exit_code())
 print([(r.index, r.state, r.profile_state) for r in report.results])
 ```
 

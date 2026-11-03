@@ -23,13 +23,14 @@ string, and every record gets one of four states. The format stays a draft
   with `"seq":"7"` has a different `chain_hash` than with `"seq":7`. Go:
   `Record.Seq` stays `uint64` and is encoded as a string (`json:"seq,string"`);
   Python: `seal()` writes an int `seq` as its decimal string.
-- **Record states.** Every record is `valid`, `invalid`, `unknown` or
-  `outside_scope` (SPEC.md 6.1). A journal verifies when no record is
-  `invalid`; `unknown` and `outside_scope` are counted and reported.
-  Consequences: a journal that starts in the middle of a stream, or has a
-  record missing, passes without `--strict` and reports the first record
-  after the gap as `unknown` (`seq_gap`, now a notice) instead of failing
-  with `chain_break` and `seq_gap`.
+- **Record states and verdict.** Every record is `valid`, `invalid`,
+  `unknown` or `outside_scope` (SPEC.md 6.1); every journal gets the verdict
+  `valid`, `invalid` or `incomplete` (6.4). `incomplete` (no invalid record,
+  but an `unknown` or `outside_scope` one) fails by default with the new
+  exit code 3; `invalid` keeps exit code 1. A journal that starts in the
+  middle of a stream, or has a record missing, is now `incomplete` (first
+  record after the gap `unknown`, `seq_gap` a notice) instead of failing
+  with `chain_break` and `seq_gap` as errors.
 - **Finding classes.** New error classes `seq_mismatch` (seq repeated,
   backwards, or skipping although `prev_hash` links to the predecessor;
   formerly part of `seq_gap`) and `profile_invalid`. New notices
@@ -42,7 +43,8 @@ string, and every record gets one of four states. The format stays a draft
 - A record without a usable `seq` or `stream_id` takes no part in the chain
   checks; the next record of its stream is judged against the last record
   that had a position.
-- JSON reports gained `strict`, `states`, `profile_states` and `results`
+- JSON reports gained `verdict`, `allow_incomplete`,
+  `require_known_profiles`, `states`, `profile_states` and `results`
   (state and profile state per record) and write `seq`, `first_seq` and
   `last_seq` as decimal strings. `trail-evidence hash` prints `state` and
   `profile_state`.
@@ -63,29 +65,39 @@ string, and every record gets one of four states. The format stays a draft
   (`go:embed`), Python ships it as package data, the browser page loads
   `web/profiles.js`; `scripts/profiles.py --write` generates all three from
   `profiles/`, `--check` and each verifier's tests fail when they differ.
-- Strict verification: `--strict` (Go and Python CLI), `Options.Strict`
-  (Go), `verify_stream(..., strict=True)` (Python), `strict` (JavaScript),
-  a checkbox on the browser page and the input `strict` of the GitHub
-  Action. It reports `seq_gap`, `outside_scope` and `profile_unknown` as
-  errors.
+- `--allow-incomplete` (Go and Python CLI; `AllowIncomplete`,
+  `allow_incomplete`, `allowIncomplete` in the APIs; a checkbox on the
+  browser page, off by default; Action input `allow-incomplete`, default
+  `false`) accepts the verdict `incomplete`, for journals known to be
+  incomplete such as rotated logs.
+- `--require-known-profiles` (likewise everywhere, Action input
+  `require-known-profiles`, default `false`) counts records with an unknown
+  profile as incomplete. Without it an unknown profile does not affect the
+  verdict: the core was checked, only the payload was not evaluated against
+  a profile.
+- GitHub Action: output `verdict` is `valid`, `invalid` or `incomplete`; the
+  step exits like the verifier (1 invalid, 3 incomplete); the job summary
+  lists invalid, unknown and outside-scope records per journal.
 - `trail-evidence profiles` and `trail-evidence-py profiles` list the known
   profiles. Go: `CheckRecord`, `Profiles`, `ProfileSchema`,
   `ValidateProfilePayload`; Python: `check_record`, `profiles`,
   `profile_schema`, `validate_payload`.
 - Browser verifier: a table with the state and profile state of every record
   (colour, symbol and text), counters per state and per profile state, a
-  filter for records that need attention, and the strict checkbox.
+  filter for records that need attention, the verdict `incomplete` in its
+  own non-green colour, and the two option checkboxes.
 - Vectors for decimal `seq` beyond 2^53 and at 2^64 - 1, legacy integer
   `seq`, missing and malformed `seq`, and the profile cases; stream fixtures
   `seq-decimal`, `seq-decimal-mismatch`, `legacy-integer-seq`,
   `seq-missing`, `seq-malformed`, `seq-gap`, `journal-start`,
   `outside-scope`, `profile-valid`, `profile-states`, `profile-unknown` and
   `profile-tampered`, with the expected state and profile state of every
-  record and strict variants. Vectors carry `expected_state` and
+  record, the verdict and exit code, and variants with the options. Vectors
+  carry `expected_state` and
   `expected_profile_state`.
 - Tampered examples `seq-gap.jsonl` (record deleted) and `outside-scope.jsonl`
-  (record moved out of scope), which pass without `--strict` and fail with
-  it.
+  (record moved out of scope), both `incomplete`: they fail by default and
+  pass only with `--allow-incomplete`.
 - PyPI upload through trusted publishing in `.github/workflows/release.yml`
   (job `pypi`, environment `pypi`). Until the pending publisher is set up on
   pypi.org (docs/RELEASING.md), the job reports why the upload failed and
@@ -104,9 +116,10 @@ string, and every record gets one of four states. The format stays a draft
 ### Changed
 
 - `scripts/crosscheck.sh` compares the complete reports of Go, Python and
-  JavaScript (everything but the wording of messages), with and without
-  keys and strict verification, including the profile journals.
-  `scripts/conformance.sh` checks record states and strict cases.
+  JavaScript (everything but the wording of messages) and their exit codes,
+  with and without keys, `--allow-incomplete` and
+  `--require-known-profiles`, including the profile journals.
+  `scripts/conformance.sh` checks record states, verdicts and exit codes.
 - JSON Schema: `seq` as decimal string (exact range by pattern) or legacy
   integer, member `profile`.
 - The Python parser rejects `NaN` and `Infinity`, like Go and JavaScript.

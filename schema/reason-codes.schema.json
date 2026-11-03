@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/RainerGewalt/trail-evidence/schema/reason-codes.schema.json",
+  "title": "trail.evidence/1 reason code catalog",
+  "description": "Shape of schema/reason-codes.json: the shared vocabulary for payload.reason_code. Documentation only; verifiers do not check reason codes.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "version", "status", "description", "severities", "namespaces", "codes"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "name": { "type": "string", "minLength": 1 },
+    "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "status": { "enum": ["draft", "stable"] },
+    "description": { "type": "string", "minLength": 1 },
+    "severities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["info", "warning", "error"],
+      "properties": {
+        "info": { "type": "string", "minLength": 1 },
+        "warning": { "type": "string", "minLength": 1 },
+        "error": { "type": "string", "minLength": 1 }
+      }
+    },
+    "namespaces": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transfer", "mqtt", "source", "ml", "common"],
+      "properties": {
+        "transfer": { "$ref": "#/$defs/namespace" },
+        "mqtt": { "$ref": "#/$defs/namespace" },
+        "source": { "$ref": "#/$defs/namespace" },
+        "ml": { "$ref": "#/$defs/namespace" },
+        "common": { "$ref": "#/$defs/namespace" }
+      }
+    },
+    "codes": {
+      "type": "array",
+      "minItems": 25,
+      "items": { "$ref": "#/$defs/code" }
+    }
+  },
+  "$defs": {
+    "producerKind": {
+      "enum": ["broker", "transfer-worker", "source-bridge", "ml-pipeline", "persistence", "other"]
+    },
+    "namespace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["producer_kinds", "description"],
+      "properties": {
+        "producer_kinds": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/producerKind" } },
+        "description": { "type": "string", "minLength": 1 }
+      }
+    },
+    "code": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "namespace", "severity", "meaning", "producer_kinds", "example", "derived_from"],
+      "properties": {
+        "code": {
+          "type": "string",
+          "description": "<namespace>.<name>, lowercase; the namespace prefix must equal the namespace member.",
+          "pattern": "^(transfer|mqtt|source|ml|common)\\.[a-z][a-z0-9_]*$"
+        },
+        "namespace": { "enum": ["transfer", "mqtt", "source", "ml", "common"] },
+        "severity": { "enum": ["info", "warning", "error"] },
+        "meaning": { "type": "string", "minLength": 1 },
+        "producer_kinds": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/producerKind" } },
+        "example": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["event_type", "payload"],
+          "properties": {
+            "event_type": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]*\\.[a-z][a-z0-9_-]*\\.[a-z][a-z0-9_-]*$"
+            },
+            "payload": {
+              "type": "object",
+              "required": ["reason_code"],
+              "properties": { "reason_code": { "type": "string" } }
+            }
+          }
+        },
+        "derived_from": { "type": "string", "minLength": 1 },
+        "related": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
+      }
+    }
+  }
+}

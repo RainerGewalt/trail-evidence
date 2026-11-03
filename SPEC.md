@@ -270,6 +270,12 @@ with the findings a verifier MUST report. The signing key in
 - ML pipeline: the audit record of a run becomes the `payload` of
   `ml.run.completed`; the recipe becomes `policy{kind:"recipe"}` with its
   lifecycle `status`.
+- Reason codes: producers that explain an outcome put a code from the
+  shared catalog into `payload.reason_code` (`docs/REASON_CODES.md`,
+  machine-readable in `schema/reason-codes.json`), for example
+  TrailTransfer's rejection reason `policy_violation` as
+  `transfer.policy_violation`. The catalog is informative; verifiers do not
+  check reason codes.
 
 ## 9. Versioning
 

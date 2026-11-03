@@ -1,0 +1,803 @@
+{
+  "$schema": "./reason-codes.schema.json",
+  "name": "trail.evidence/1 reason codes",
+  "version": "0.1.0",
+  "status": "draft",
+  "description": "Shared vocabulary for payload.reason_code across the producer kinds of trail.evidence/1. Documentation only: verifiers do not check reason codes. docs/REASON_CODES.md is generated from this file by scripts/reason_codes.py.",
+  "severities": {
+    "info": "The event happened as intended. Nothing to follow up.",
+    "warning": "The operation was refused by design, or it completed in a degraded way. The evidence is complete; someone should look.",
+    "error": "The operation failed, or facts the producer should have recorded are missing."
+  },
+  "namespaces": {
+    "transfer": {
+      "producer_kinds": [
+        "transfer-worker"
+      ],
+      "description": "File transfer jobs (TrailTransfer): results and rejections."
+    },
+    "mqtt": {
+      "producer_kinds": [
+        "broker"
+      ],
+      "description": "Broker access decisions, as written by an export adapter."
+    },
+    "source": {
+      "producer_kinds": [
+        "source-bridge"
+      ],
+      "description": "Source bridges (TrailSource): address space, value quality, connection."
+    },
+    "ml": {
+      "producer_kinds": [
+        "ml-pipeline"
+      ],
+      "description": "ML pipelines: run lifecycle, acceptance against the recipe, predictions."
+    },
+    "common": {
+      "producer_kinds": [
+        "broker",
+        "transfer-worker",
+        "source-bridge",
+        "ml-pipeline",
+        "persistence",
+        "other"
+      ],
+      "description": "Conditions every producer can hit: gaps, restarts, configuration changes, clock problems."
+    }
+  },
+  "codes": [
+    {
+      "code": "transfer.completed",
+      "namespace": "transfer",
+      "severity": "info",
+      "meaning": "The job ran to the end and every file reached the target.",
+      "producer_kinds": [
+        "transfer-worker"
+      ],
+      "example": {
+        "event_type": "transfer.job.result",
+        "payload": {
+          "action": "copy",
+          "status": "ok",
+          "files": 1,
+          "reason_code": "transfer.completed"
+        }
+      },
+      "derived_from": "examples/transfer-worker.jsonl (records 0, 1, 3); TrailTransfer status completed"
+    },
+    {
+      "code": "transfer.source_not_found",
+      "namespace": "transfer",
+      "severity": "error",
+      "meaning": "The source path did not exist when the job ran; nothing was transferred.",
+      "producer_kinds": [
+        "transfer-worker"
+      ],
+      "example": {
+        "event_type": "transfer.job.result",
+        "payload": {
+          "action": "copy",
+          "status": "failed",
+          "error": "source not found",
+          "files": 0,
+          "reason_code": "transfer.source_not_found"
+        }
+      },
+      "derived_from": "examples/transfer-worker.jsonl (record 2)"
+    },
+    {
+      "code": "transfer.target_write_failed",
+      "namespace": "transfer",
+      "severity": "error",
+      "meaning": "The target refused or failed a write (permission, quota, network); the job stopped.",
+      "producer_kinds": [
+        "transfer-worker"
+      ],
+      "example": {
+        "event_type": "transfer.job.result",
+        "payload": {
+          "action": "copy",
+          "status": "failed",
+          "error": "s3: AccessDenied",
+          "files": 0,
+          "reason_code": "transfer.target_write_failed"
+        }
+      },
+      "derived_from": "TrailTransfer status failed"
+    },
+    {
+      "code": "transfer.checksum_mismatch",
+      "namespace": "transfer",
+      "severity": "error",
+      "meaning": "The checksum of a file read back from the target differs from the source.",
+      "producer_kinds": [
+        "transfer-worker"
+      ],
+      "example": {
+        "event_type": "transfer.job.result",
+        "payload": {
+          "action": "copy",
+          "status": "failed",
+          "file": "report.csv",
+          "source_sha256": "sha256:…",
+          "target_sha256": "sha256:…",
+          "reason_code": "transfer.checksum_mismatch"
+        }
+      },
+      "derived_from": "TrailTransfer status failed"
+    },
+    {
+      "code": "transfer.partial",
+      "namespace": "transfer",
+      "severity": "error",
+      "meaning": "Some files reached the target, others did not; the payload lists the failed ones.",
+      "producer_kinds": [
+        "transfer-worker"
+      ],
+      "example": {
+        "event_type": "transfer.job.result",
+        "payload": {
+          "action": "move",
+          "status": "failed",
+          "files": 14,
+          "files_failed": [
+            "batch-07/f-09.csv"
+          ],
+          "reason_code": "transfer.partial"
+        }
+      },
+      "derived_from": "TrailTransfer status failed"
+    },
+    {
+      "code": "transfer.cancelled",
+      "namespace": "transfer",
+      "severity": "warning",
+      "meaning": "An operator or the scheduler cancelled the job before it finished.",
+      "producer_kinds": [
+        "transfer-worker"
+      ],
+      "example": {
+        "event_type": "transfer.job.result",
+        "payload": {
+          "action": "sync",
+          "status": "cancelled",
+          "files": 3,
+          "reason_code": "transfer.cancelled"
+        }
+      },
+      "derived_from": "TrailTransfer status cancelled"
+    },
+    {
+      "code": "transfer.schema_violation",
+      "namespace": "transfer",
+      "severity": "warning",
+      "meaning": "The job command did not match the command schema and was rejected before execution.",
+      "producer_kinds": [
+        "transfer-worker"
+      ],
+      "example": {
+        "event_type": "transfer.job.rejected",
+        "payload": {
+          "status": "rejected",
+          "errors": [
+            "/target: required"
+          ],
+          "reason_code": "transfer.schema_violation"
+        }
+      },
+      "derived_from": "TrailTransfer rejection reason schema_violation"
+    },
+    {
+      "code": "transfer.policy_violation",
+      "namespace": "transfer",
+      "severity": "warning",
+      "meaning": "The transfer policy does not allow this action, source or target; the job was rejected before execution.",
+      "producer_kinds": [
+        "transfer-worker"
+      ],
+      "example": {
+        "event_type": "transfer.job.rejected",
+        "payload": {
+          "status": "rejected",
+          "action": "move",
+          "target": "s3://public/…",
+          "reason_code": "transfer.policy_violation"
+        }
+      },
+      "derived_from": "TrailTransfer rejection reason policy_violation"
+    },
+    {
+      "code": "transfer.duplicate_job_id",
+      "namespace": "transfer",
+      "severity": "warning",
+      "meaning": "A job with this job_id was already accepted; the second submission was rejected.",
+      "producer_kinds": [
+        "transfer-worker"
+      ],
+      "example": {
+        "event_type": "transfer.job.rejected",
+        "payload": {
+          "status": "rejected",
+          "job_id": "job-1002",
+          "reason_code": "transfer.duplicate_job_id"
+        }
+      },
+      "derived_from": "TrailTransfer rejection reason duplicate_job_id"
+    },
+    {
+      "code": "transfer.too_many_jobs",
+      "namespace": "transfer",
+      "severity": "warning",
+      "meaning": "The worker's concurrency limit was reached; the job was rejected and may be resubmitted.",
+      "producer_kinds": [
+        "transfer-worker"
+      ],
+      "example": {
+        "event_type": "transfer.job.rejected",
+        "payload": {
+          "status": "rejected",
+          "running": 8,
+          "limit": 8,
+          "reason_code": "transfer.too_many_jobs"
+        }
+      },
+      "derived_from": "TrailTransfer rejection reason too_many_jobs"
+    },
+    {
+      "code": "mqtt.rule_match",
+      "namespace": "mqtt",
+      "severity": "info",
+      "meaning": "A topic rule grants this client the requested action on this topic; the broker allowed it.",
+      "producer_kinds": [
+        "broker"
+      ],
+      "example": {
+        "event_type": "mqtt.decision.allow",
+        "payload": {
+          "client_id": "sensor-gw-3",
+          "topic": "plant/line1/telemetry",
+          "action": "publish",
+          "access_decision": "allow",
+          "reason_code": "mqtt.rule_match"
+        }
+      },
+      "derived_from": "examples/broker-export.jsonl (records 0, 2)"
+    },
+    {
+      "code": "mqtt.no_matching_grant",
+      "namespace": "mqtt",
+      "severity": "warning",
+      "meaning": "No topic rule grants this client the requested action on this topic; the broker denied it (default deny).",
+      "producer_kinds": [
+        "broker"
+      ],
+      "example": {
+        "event_type": "mqtt.decision.deny",
+        "payload": {
+          "client_id": "guest-app",
+          "topic": "plant/line1/control",
+          "action": "publish",
+          "access_decision": "deny",
+          "reason_code": "mqtt.no_matching_grant"
+        }
+      },
+      "derived_from": "examples/broker-export.jsonl (record 1)"
+    },
+    {
+      "code": "mqtt.explicit_deny",
+      "namespace": "mqtt",
+      "severity": "warning",
+      "meaning": "A topic rule explicitly denies this client the requested action; the broker denied it.",
+      "producer_kinds": [
+        "broker"
+      ],
+      "example": {
+        "event_type": "mqtt.decision.deny",
+        "payload": {
+          "client_id": "hmi-line2",
+          "topic": "plant/line1/control",
+          "action": "publish",
+          "access_decision": "deny",
+          "reason_code": "mqtt.explicit_deny"
+        }
+      },
+      "derived_from": "broker decision semantics (allow, deny by rule, default deny)"
+    },
+    {
+      "code": "mqtt.not_authenticated",
+      "namespace": "mqtt",
+      "severity": "warning",
+      "meaning": "The client had no authenticated identity and the requested action needs one; the broker denied it.",
+      "producer_kinds": [
+        "broker"
+      ],
+      "example": {
+        "event_type": "mqtt.decision.deny",
+        "payload": {
+          "client_id": "anon-7f",
+          "topic": "plant/line1/telemetry",
+          "action": "subscribe",
+          "access_decision": "deny",
+          "reason_code": "mqtt.not_authenticated"
+        }
+      },
+      "derived_from": "actor.auth none (SPEC.md 3.3)"
+    },
+    {
+      "code": "mqtt.policy_unavailable",
+      "namespace": "mqtt",
+      "severity": "error",
+      "meaning": "The broker could not evaluate its rules (store unreachable, rule set not loaded) and denied the action fail-closed.",
+      "producer_kinds": [
+        "broker"
+      ],
+      "example": {
+        "event_type": "mqtt.decision.deny",
+        "payload": {
+          "client_id": "sensor-gw-3",
+          "topic": "plant/line1/telemetry",
+          "action": "publish",
+          "access_decision": "deny",
+          "reason_code": "mqtt.policy_unavailable"
+        }
+      },
+      "derived_from": "broker decision semantics (fail-closed deny)"
+    },
+    {
+      "code": "mqtt.quota_exceeded",
+      "namespace": "mqtt",
+      "severity": "warning",
+      "meaning": "The action was within the client's grants but exceeded a rate, size or connection limit; the broker denied it.",
+      "producer_kinds": [
+        "broker"
+      ],
+      "example": {
+        "event_type": "mqtt.decision.deny",
+        "payload": {
+          "client_id": "sensor-gw-3",
+          "topic": "plant/line1/telemetry",
+          "action": "publish",
+          "payload_size": 1048577,
+          "access_decision": "deny",
+          "reason_code": "mqtt.quota_exceeded"
+        }
+      },
+      "derived_from": "broker decision semantics (limits)"
+    },
+    {
+      "code": "source.inventory_initial",
+      "namespace": "source",
+      "severity": "info",
+      "meaning": "First complete browse of the source's address space after the bridge started.",
+      "producer_kinds": [
+        "source-bridge"
+      ],
+      "example": {
+        "event_type": "source.inventory.changed",
+        "payload": {
+          "inventory_hash": "sha256:…",
+          "count": 2,
+          "reason_code": "source.inventory_initial"
+        }
+      },
+      "derived_from": "examples/source-bridge.jsonl (record 0)"
+    },
+    {
+      "code": "source.node_added",
+      "namespace": "source",
+      "severity": "info",
+      "meaning": "A node appeared in the address space; the inventory fingerprint changed.",
+      "producer_kinds": [
+        "source-bridge"
+      ],
+      "example": {
+        "event_type": "source.inventory.changed",
+        "payload": {
+          "inventory_hash": "sha256:…",
+          "added": [
+            "ns=2;s=Line1.Pressure"
+          ],
+          "reason_code": "source.node_added"
+        }
+      },
+      "derived_from": "source.inventory.changed (SPEC.md 3.1)"
+    },
+    {
+      "code": "source.node_removed",
+      "namespace": "source",
+      "severity": "warning",
+      "meaning": "A node that values were read from disappeared from the address space; later records cannot refer to it.",
+      "producer_kinds": [
+        "source-bridge"
+      ],
+      "example": {
+        "event_type": "source.inventory.changed",
+        "payload": {
+          "inventory_hash": "sha256:…",
+          "removed": [
+            "ns=2;s=Line1.Speed"
+          ],
+          "reason_code": "source.node_removed"
+        }
+      },
+      "derived_from": "source.inventory.changed (SPEC.md 3.1)"
+    },
+    {
+      "code": "source.quality_uncertain",
+      "namespace": "source",
+      "severity": "warning",
+      "meaning": "The source delivered the value with quality uncertain (stale, sensor not calibrated, substituted).",
+      "producer_kinds": [
+        "source-bridge"
+      ],
+      "example": {
+        "event_type": "source.value.observed",
+        "payload": {
+          "entity_key": "line1/temp",
+          "value": "21.5",
+          "quality": "uncertain",
+          "reason_code": "source.quality_uncertain"
+        }
+      },
+      "derived_from": "examples/source-bridge.jsonl (quality member)"
+    },
+    {
+      "code": "source.quality_bad",
+      "namespace": "source",
+      "severity": "error",
+      "meaning": "The source delivered the value with quality bad; the value must not be used as a measurement.",
+      "producer_kinds": [
+        "source-bridge"
+      ],
+      "example": {
+        "event_type": "source.value.observed",
+        "payload": {
+          "entity_key": "line1/temp",
+          "value": "0",
+          "quality": "bad",
+          "reason_code": "source.quality_bad"
+        }
+      },
+      "derived_from": "examples/source-bridge.jsonl (quality member)"
+    },
+    {
+      "code": "source.connection_lost",
+      "namespace": "source",
+      "severity": "error",
+      "meaning": "The bridge lost the connection to the source; values that changed until it reconnects are not observed.",
+      "producer_kinds": [
+        "source-bridge"
+      ],
+      "example": {
+        "event_type": "source.connection.changed",
+        "payload": {
+          "source_address": "opc.tcp://plc-7:4840",
+          "state": "disconnected",
+          "reason_code": "source.connection_lost"
+        }
+      },
+      "derived_from": "examples/source-bridge.jsonl (context.source_status)"
+    },
+    {
+      "code": "source.connection_restored",
+      "namespace": "source",
+      "severity": "info",
+      "meaning": "The bridge reconnected to the source and resumed reading.",
+      "producer_kinds": [
+        "source-bridge"
+      ],
+      "example": {
+        "event_type": "source.connection.changed",
+        "payload": {
+          "source_address": "opc.tcp://plc-7:4840",
+          "state": "connected",
+          "down_ms": 4200,
+          "reason_code": "source.connection_restored"
+        }
+      },
+      "derived_from": "examples/source-bridge.jsonl (context.source_status)"
+    },
+    {
+      "code": "source.queue_overflow",
+      "namespace": "source",
+      "severity": "error",
+      "meaning": "Values arrived faster than the bridge could seal them and were dropped; the payload counts them.",
+      "producer_kinds": [
+        "source-bridge"
+      ],
+      "example": {
+        "event_type": "source.value.dropped",
+        "payload": {
+          "entity_key": "line1/speed",
+          "dropped": 37,
+          "reason_code": "source.queue_overflow"
+        }
+      },
+      "derived_from": "producer-side loss, see common.gap"
+    },
+    {
+      "code": "ml.metrics_accepted",
+      "namespace": "ml",
+      "severity": "info",
+      "meaning": "The run's metrics meet the acceptance criteria of the recipe named in policy.",
+      "producer_kinds": [
+        "ml-pipeline"
+      ],
+      "example": {
+        "event_type": "ml.run.completed",
+        "payload": {
+          "run_id": "run-7f3a",
+          "metrics": {
+            "dice": "0.9132"
+          },
+          "decision": {
+            "threshold": "0.9000"
+          },
+          "reason_code": "ml.metrics_accepted"
+        }
+      },
+      "derived_from": "examples/ml-pipeline.jsonl (record 1)"
+    },
+    {
+      "code": "ml.metrics_below_threshold",
+      "namespace": "ml",
+      "severity": "warning",
+      "meaning": "The run completed but a metric is below the recipe's acceptance threshold; the model is not released.",
+      "producer_kinds": [
+        "ml-pipeline"
+      ],
+      "example": {
+        "event_type": "ml.run.completed",
+        "payload": {
+          "run_id": "run-81c2",
+          "metrics": {
+            "dice": "0.8710"
+          },
+          "decision": {
+            "threshold": "0.9000"
+          },
+          "reason_code": "ml.metrics_below_threshold"
+        }
+      },
+      "derived_from": "examples/ml-pipeline.jsonl (decision member)"
+    },
+    {
+      "code": "ml.recipe_not_approved",
+      "namespace": "ml",
+      "severity": "error",
+      "meaning": "The run used a recipe whose policy.status is not approved or active; its results must not be released.",
+      "producer_kinds": [
+        "ml-pipeline"
+      ],
+      "example": {
+        "event_type": "ml.run.started",
+        "payload": {
+          "run_id": "run-81c3",
+          "recipe_status": "draft",
+          "reason_code": "ml.recipe_not_approved"
+        }
+      },
+      "derived_from": "policy.status (SPEC.md 3.3)"
+    },
+    {
+      "code": "ml.data_fingerprint_mismatch",
+      "namespace": "ml",
+      "severity": "error",
+      "meaning": "The fingerprint of the input data differs from the one the recipe declares; the run is not comparable.",
+      "producer_kinds": [
+        "ml-pipeline"
+      ],
+      "example": {
+        "event_type": "ml.run.started",
+        "payload": {
+          "run_id": "run-81c4",
+          "data_fingerprint": "sha256:…",
+          "expected_data_fingerprint": "sha256:…",
+          "reason_code": "ml.data_fingerprint_mismatch"
+        }
+      },
+      "derived_from": "examples/ml-pipeline.jsonl (data_fingerprint)"
+    },
+    {
+      "code": "ml.run_aborted",
+      "namespace": "ml",
+      "severity": "error",
+      "meaning": "The run stopped before completion (crash, timeout, operator); no metrics are final.",
+      "producer_kinds": [
+        "ml-pipeline"
+      ],
+      "example": {
+        "event_type": "ml.run.aborted",
+        "payload": {
+          "run_id": "run-81c5",
+          "after_s": 1312,
+          "error": "CUDA out of memory",
+          "reason_code": "ml.run_aborted"
+        }
+      },
+      "derived_from": "ml.run.* lifecycle"
+    },
+    {
+      "code": "ml.low_confidence",
+      "namespace": "ml",
+      "severity": "warning",
+      "meaning": "A prediction's calibrated probability is below the recipe's confidence threshold and needs review.",
+      "producer_kinds": [
+        "ml-pipeline"
+      ],
+      "example": {
+        "event_type": "ml.prediction.created",
+        "payload": {
+          "run_id": "run-7f3a",
+          "sample_id": "s-000512",
+          "probability": "0.5410",
+          "label": "defect",
+          "reason_code": "ml.low_confidence"
+        }
+      },
+      "derived_from": "examples/ml-pipeline.jsonl (record 2)"
+    },
+    {
+      "code": "common.gap",
+      "namespace": "common",
+      "severity": "error",
+      "meaning": "The producer knows that events between two points were not recorded (outage, dropped values, lost buffer) and says so. The journal itself stays intact; compare the finding class seq_gap, which means records are missing from the journal.",
+      "producer_kinds": [
+        "broker",
+        "transfer-worker",
+        "source-bridge",
+        "ml-pipeline",
+        "persistence",
+        "other"
+      ],
+      "example": {
+        "event_type": "source.data.gap",
+        "payload": {
+          "from": "2026-11-02T07:10:00.000Z",
+          "to": "2026-11-02T07:14:12.000Z",
+          "cause": "source.connection_lost",
+          "reason_code": "common.gap"
+        }
+      },
+      "derived_from": "finding class seq_gap (SPEC.md 6.1)",
+      "related": [
+        "seq_gap"
+      ]
+    },
+    {
+      "code": "common.restart",
+      "namespace": "common",
+      "severity": "info",
+      "meaning": "The producer process restarted and continued the stream with a new segment anchored at the last chain_hash it knew. Belongs on the record with chain_restart: true.",
+      "producer_kinds": [
+        "broker",
+        "transfer-worker",
+        "source-bridge",
+        "ml-pipeline",
+        "persistence",
+        "other"
+      ],
+      "example": {
+        "event_type": "transfer.worker.restarted",
+        "payload": {
+          "previous_version": "0.3.0",
+          "version": "0.3.1",
+          "reason_code": "common.restart"
+        }
+      },
+      "derived_from": "finding class restart (SPEC.md 4.2, 6.1)",
+      "related": [
+        "restart",
+        "chain_restart"
+      ]
+    },
+    {
+      "code": "common.state_lost",
+      "namespace": "common",
+      "severity": "warning",
+      "meaning": "The producer restarted without knowing its previous chain_hash (storage lost or replaced) and anchored the new segment at genesis.",
+      "producer_kinds": [
+        "broker",
+        "transfer-worker",
+        "source-bridge",
+        "ml-pipeline",
+        "persistence",
+        "other"
+      ],
+      "example": {
+        "event_type": "source.bridge.restarted",
+        "payload": {
+          "cause": "state directory empty",
+          "reason_code": "common.state_lost"
+        }
+      },
+      "derived_from": "testdata/streams/restart-unknown-anchor.jsonl",
+      "related": [
+        "restart",
+        "chain_restart",
+        "anchor_hash"
+      ]
+    },
+    {
+      "code": "common.config_changed",
+      "namespace": "common",
+      "severity": "info",
+      "meaning": "The producer loaded a new configuration or policy version; later records name it in policy.",
+      "producer_kinds": [
+        "broker",
+        "transfer-worker",
+        "source-bridge",
+        "ml-pipeline",
+        "persistence",
+        "other"
+      ],
+      "example": {
+        "event_type": "transfer.policy.changed",
+        "payload": {
+          "policy_id": "archive-policy",
+          "from_version": "6",
+          "to_version": "7",
+          "to_hash": "sha256:…",
+          "reason_code": "common.config_changed"
+        }
+      },
+      "derived_from": "policy member (SPEC.md 3.3); mapping notes config_version (SPEC.md 8)",
+      "related": [
+        "policy"
+      ]
+    },
+    {
+      "code": "common.time_uncertain",
+      "namespace": "common",
+      "severity": "warning",
+      "meaning": "The producer cannot vouch for its clock (no NTP sync, time reconstructed from seq); recorded_at may be off. Records written meanwhile carry time.source unknown or seq-reconstructed.",
+      "producer_kinds": [
+        "broker",
+        "transfer-worker",
+        "source-bridge",
+        "ml-pipeline",
+        "persistence",
+        "other"
+      ],
+      "example": {
+        "event_type": "source.clock.changed",
+        "payload": {
+          "time_source": "unknown",
+          "last_sync": "2026-11-01T22:00:00.000Z",
+          "reason_code": "common.time_uncertain"
+        }
+      },
+      "derived_from": "time.source (SPEC.md 3.3)",
+      "related": [
+        "time.source"
+      ]
+    },
+    {
+      "code": "common.clock_step",
+      "namespace": "common",
+      "severity": "warning",
+      "meaning": "The wall clock jumped forwards or backwards by more than the producer's tolerance; recorded_at values around the step are not monotonic.",
+      "producer_kinds": [
+        "broker",
+        "transfer-worker",
+        "source-bridge",
+        "ml-pipeline",
+        "persistence",
+        "other"
+      ],
+      "example": {
+        "event_type": "transfer.clock.stepped",
+        "payload": {
+          "step_ms": -3500,
+          "time_source": "ntp",
+          "reason_code": "common.clock_step"
+        }
+      },
+      "derived_from": "time.source (SPEC.md 3.3)",
+      "related": [
+        "time.recorded_at"
+      ]
+    }
+  ]
+}

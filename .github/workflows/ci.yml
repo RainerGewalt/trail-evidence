@@ -49,6 +49,23 @@ jobs:
       - run: python -m trail_evidence verify ../examples/transfer-worker.jsonl
       - run: python -m trail_evidence verify ../testdata/streams/signed.jsonl --pubkey ../testdata/keys/test-ed25519.pub --require-signatures
 
+  python-package:
+    name: Python package (sdist and wheel, no upload)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade build
+      - run: python -m build python
+      - name: installed console script verifies the examples
+        run: |
+          python -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install python/dist/*.whl
+          "$RUNNER_TEMP/venv/bin/trail-evidence-py" verify examples/transfer-worker.jsonl
+          "$RUNNER_TEMP/venv/bin/trail-evidence-py" verify testdata/streams/signed.jsonl --pubkey testdata/keys/test-ed25519.pub --require-signatures
+
   web:
     name: Browser verifier (Node ${{ matrix.node }})
     runs-on: ubuntu-latest

@@ -1,23 +1,38 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "trail-evidence"
-version = "0.1.0.dev0"
+version = "0.1.0"
 description = "Trail Evidence Record v1: seal and verify hash-chained JSON evidence records (reference implementation, standard library only)"
 readme = "README.md"
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.9"
 authors = [{ name = "Florian Przybylak" }]
+keywords = ["audit", "evidence", "hash-chain", "jcs", "rfc8785", "ed25519", "json-lines"]
 classifiers = [
   "Development Status :: 3 - Alpha",
-  "License :: OSI Approved :: Apache Software License",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
   "Topic :: Security :: Cryptography",
+  "Topic :: System :: Logging",
 ]
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/RainerGewalt/trail-evidence"
+Specification = "https://github.com/RainerGewalt/trail-evidence/blob/main/SPEC.md"
+Changelog = "https://github.com/RainerGewalt/trail-evidence/blob/main/CHANGELOG.md"
+Issues = "https://github.com/RainerGewalt/trail-evidence/issues"
 
 [project.scripts]
 trail-evidence-py = "trail_evidence.__main__:main"

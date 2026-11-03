@@ -4,7 +4,11 @@ All notable changes to this repository are documented here. The format
 follows Keep a Changelog; versions follow Semantic Versioning once 1.0 is
 tagged. Until then the record format is a draft and may change.
 
-## 0.2.0 - unreleased
+## Unreleased
+
+Nothing yet.
+
+## 0.2.0 - 2026-11-03
 
 Format 0.2 of `trail.evidence/1`. It decides two design questions for every
 producer that builds on Trail Evidence, among them TrailMQ, whose decision

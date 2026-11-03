@@ -1,0 +1,109 @@
+name: release
+
+# Builds the trail-evidence binaries with GoReleaser when a tag v* is pushed,
+# attaches them to the GitHub release, pushes the Go module tag go/<tag> so
+# that `go install .../go/cmd/trail-evidence@<tag>` resolves, and builds the
+# Python distribution as a workflow artifact. PyPI upload is manual, see
+# docs/RELEASING.md.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Go tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: go
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache-dependency-path: go/go.sum
+      - run: go test ./...
+      - name: generated files are up to date
+        run: go run ./internal/gentestdata -root .. -check
+
+  goreleaser:
+    name: GoReleaser
+    needs: [test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache-dependency-path: go/go.sum
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  go-module-tag:
+    # The Go module lives in go/, so the module proxy looks for tags named
+    # go/<version>. Push that tag alongside v<version> when it is missing.
+    name: Go module tag go/${{ github.ref_name }}
+    needs: [goreleaser]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: push go/${{ github.ref_name }}
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --tags origin "refs/tags/go/$TAG" >/dev/null 2>&1; then
+            echo "go/$TAG already exists"
+            exit 0
+          fi
+          git tag "go/$TAG" "$GITHUB_SHA"
+          git push origin "refs/tags/go/$TAG"
+
+  python-dist:
+    name: Python distribution (no upload)
+    needs: [test]
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: python
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: tag matches pyproject.toml version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          python - <<'PY'
+          import os, sys, tomllib
+          version = tomllib.load(open("pyproject.toml", "rb"))["project"]["version"]
+          tag = os.environ["TAG"]
+          if tag != "v" + version:
+              sys.exit(f"tag {tag} does not match pyproject.toml version {version}")
+          print(f"tag {tag} matches pyproject.toml version {version}")
+          PY
+      - run: python -m pip install --upgrade build
+      - run: python -m unittest discover -s tests
+      - run: python -m build
+      - name: installed console script verifies the example journal
+        run: |
+          python -m pip install dist/*.whl
+          trail-evidence-py verify ../examples/transfer-worker.jsonl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-dist-${{ github.ref_name }}
+          path: python/dist/
+          if-no-files-found: error

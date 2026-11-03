@@ -1,0 +1,67 @@
+# GoReleaser configuration. Run by .github/workflows/release.yml on tags v*.
+# Local check: goreleaser check; local dry run: goreleaser release --snapshot --clean
+version: 2
+
+project_name: trail-evidence
+
+before:
+  hooks:
+    - go -C go mod download
+
+builds:
+  - id: trail-evidence
+    dir: go
+    main: ./cmd/trail-evidence
+    binary: trail-evidence
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: default
+    ids: [trail-evidence]
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - LICENSE
+      - SPEC.md
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+changelog:
+  disable: true
+
+release:
+  github:
+    owner: RainerGewalt
+    name: trail-evidence
+  prerelease: auto
+  mode: keep-existing
+  header: |
+    Trail Evidence Record verifier {{ .Tag }}. Binaries for Linux, macOS and
+    Windows (amd64, arm64); each archive contains `LICENSE` and `SPEC.md`,
+    `checksums.txt` holds the SHA-256 of every archive.
+
+    Other ways to install: `go install github.com/RainerGewalt/trail-evidence/go/cmd/trail-evidence@{{ .Tag }}`
+    (needs the module tag `go/{{ .Tag }}`, which the release workflow pushes),
+    `pip install trail-evidence` (uploaded manually, see docs/RELEASING.md),
+    or the GitHub Action `RainerGewalt/trail-evidence@{{ .Tag }}`.
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"

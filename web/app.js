@@ -17,7 +17,8 @@
   const pubkeyInput = $("pubkey");
   const pubkeyError = $("pubkey-error");
   const requireBox = $("require-signatures");
-  const strictBox = $("strict");
+  const allowBox = $("allow-incomplete");
+  const knownBox = $("require-known-profiles");
   const knownProfiles = $("known-profiles");
   const stateCounters = $("state-counters");
   const profileCounters = $("profile-counters");
@@ -168,7 +169,7 @@
     if (ev.key === "Enter" && !verifyButton.disabled) run();
   });
   verifyButton.addEventListener("click", run);
-  strictBox.addEventListener("change", () => { if (journal) run(); });
+  for (const box of [allowBox, knownBox]) box.addEventListener("change", () => { if (journal) run(); });
   recordFilter.addEventListener("change", () => { if (lastReport) renderRecords(lastReport); });
 
   // ---------------------------------------------------------------- run
@@ -191,7 +192,8 @@
       const report = await te.verifyStream(journal.text, {
         publicKey: key,
         requireSignatures: !!key && requireBox.checked,
-        strict: strictBox.checked,
+        allowIncomplete: allowBox.checked,
+        requireKnownProfiles: knownBox.checked,
         onProgress: (n) => { status.textContent = `Verifying… ${n} records`; },
       });
       render(report, key !== null);
@@ -223,8 +225,11 @@
 
   function render(report, keyGiven) {
     result.hidden = false;
-    verdict.className = "verdict " + (report.ok ? "ok" : "fail");
-    verdictLabel.textContent = report.ok ? "OK" : "FAIL";
+    // incomplete keeps its own, non-green look even when it is allowed.
+    verdict.className = "verdict " + report.verdict;
+    verdictLabel.textContent = report.verdict === "incomplete"
+      ? (report.ok ? "? INCOMPLETE (allowed)" : "? INCOMPLETE")
+      : report.verdict === "valid" ? "\u2713 VALID" : "\u2717 INVALID";
     verdictSummary.textContent = te.summary(report);
 
     // Signature status
@@ -247,14 +252,10 @@
     profileCounters.replaceChildren();
     for (const st of te.PROFILE_STATES) profileCounters.appendChild(stateCounter(st, report.profile_states[st]));
     const counts = {};
-    const strictErrors = new Set();
-    for (const f of report.findings) {
-      counts[f.class] = (counts[f.class] || 0) + 1;
-      if (f.severity === "error" && !te.ERROR_CLASSES.includes(f.class)) strictErrors.add(f.class);
-    }
+    for (const f of report.findings) counts[f.class] = (counts[f.class] || 0) + 1;
     counters.replaceChildren();
     for (const cls of te.ERROR_CLASSES) counters.appendChild(counter(cls, counts[cls] || 0, "error"));
-    for (const cls of te.NOTICE_CLASSES) counters.appendChild(counter(cls, counts[cls] || 0, strictErrors.has(cls) ? "error" : "notice"));
+    for (const cls of te.NOTICE_CLASSES) counters.appendChild(counter(cls, counts[cls] || 0, "notice"));
 
     lastReport = report;
     renderRecords(report);

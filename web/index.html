@@ -46,8 +46,13 @@
       </div>
 
       <div class="field field-inline">
-        <input type="checkbox" id="strict">
-        <label for="strict">Strict: also fail on records in state <code>unknown</code> or <code>outside_scope</code> and on profiles this page does not know</label>
+        <input type="checkbox" id="allow-incomplete">
+        <label for="allow-incomplete">Allow an incomplete journal <span class="muted">(records in state <code>unknown</code> or <code>outside_scope</code> do not fail it; only for journals known to be incomplete, such as rotated logs)</span></label>
+      </div>
+
+      <div class="field field-inline">
+        <input type="checkbox" id="require-known-profiles">
+        <label for="require-known-profiles">Require known profiles <span class="muted">(a record whose profile this page does not know makes the journal incomplete)</span></label>
       </div>
       <p id="known-profiles" class="muted small"></p>
 
@@ -133,11 +138,17 @@
         <strong>outside scope</strong>: the record names another format or major version and is not checked.
       </p>
       <p>
-        A journal passes when no record is invalid. Unknown and out-of-scope records are counted, not failed:
-        deleting a record leaves its successor unknown rather than invalid. Tick <em>Strict</em> to fail on them,
-        and on profiles this page does not know. A record's profile state (<code>none</code>, <code>valid</code>,
-        <code>invalid</code>, <code>outside_scope</code>) says whether its payload was checked against the
-        schema of its profile.
+        The journal gets one of three verdicts. <strong>valid</strong>: every record is valid.
+        <strong>invalid</strong>: at least one record is invalid. <strong>incomplete</strong>: no record is
+        invalid, but at least one is unknown or outside the scope, so the file cannot show that nothing is
+        missing; deleting a record from the middle leads here. Incomplete fails unless you allow it, which is
+        meant for journals known to be incomplete, such as rotated logs.
+      </p>
+      <p>
+        A record's profile state (<code>none</code>, <code>valid</code>, <code>invalid</code>,
+        <code>outside_scope</code>) says whether its payload was checked against the schema of its profile. A
+        profile this page does not know leaves the payload unchecked but does not change the verdict, unless
+        <em>Require known profiles</em> is ticked.
       </p>
     </section>
   </main>

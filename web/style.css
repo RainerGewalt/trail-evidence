@@ -167,6 +167,9 @@ button.secondary { font-size: 0.9rem; padding: 0.3rem 0.8rem; margin-bottom: 0.5
 }
 .verdict.ok { background: var(--ok-bg); color: var(--ok-fg); border-color: var(--ok-border); }
 .verdict.fail { background: var(--fail-bg); color: var(--fail-fg); border-color: var(--fail-border); }
+.verdict.valid { background: var(--ok-bg); color: var(--ok-fg); border-color: var(--ok-border); }
+.verdict.invalid { background: var(--fail-bg); color: var(--fail-fg); border-color: var(--fail-border); }
+.verdict.incomplete { background: var(--unknown-bg); color: var(--unknown-fg); border-color: var(--unknown-border); }
 .verdict-label { font-size: 1.4rem; font-weight: 700; letter-spacing: 0.02em; }
 .verdict-summary { font-family: var(--mono); font-size: 0.9rem; word-break: break-word; }
 

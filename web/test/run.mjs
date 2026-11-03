@@ -2,8 +2,8 @@
 // Tests for web/verify.js against the shared test data. Run with Node 18+:
 //
 //   node web/test/run.mjs                 run all checks
-//   node web/test/run.mjs report <file.jsonl> [--pubkey <hex|file>] [--require-signatures] [--strict]
-//                                         print the JSON report (exit 0 ok, 1 fail, 2 usage)
+//   node web/test/run.mjs report <file.jsonl> [--pubkey <hex|file>] [--require-signatures] [--allow-incomplete] [--require-known-profiles]
+//                                         print the JSON report (exit 0 ok, 1 invalid, 2 usage, 3 incomplete)
 //   node web/test/run.mjs verify <file.jsonl> [...] --json
 //                                         same as report, with the CLI flags of Go and Python
 //   node web/test/run.mjs hash <record.json>
@@ -53,7 +53,8 @@ async function reportMode(args) {
   let file = null;
   let pubkey = null;
   let requireSignatures = false;
-  let strict = false;
+  let allowIncomplete = false;
+  let requireKnownProfiles = false;
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === "--pubkey") {
@@ -62,8 +63,10 @@ async function reportMode(args) {
       pubkey = a.slice("--pubkey=".length);
     } else if (a === "--require-signatures") {
       requireSignatures = true;
-    } else if (a === "--strict") {
-      strict = true;
+    } else if (a === "--allow-incomplete") {
+      allowIncomplete = true;
+    } else if (a === "--require-known-profiles") {
+      requireKnownProfiles = true;
     } else if (a === "--json") {
       // the report is always JSON
     } else if (a.startsWith("-")) {
@@ -72,12 +75,12 @@ async function reportMode(args) {
     } else if (file === null) {
       file = a;
     } else {
-      console.error("usage: run.mjs report <file.jsonl> [--pubkey <hex|file>] [--require-signatures] [--strict]");
+      console.error("usage: run.mjs report <file.jsonl> [--pubkey <hex|file>] [--require-signatures] [--allow-incomplete] [--require-known-profiles]");
       return 2;
     }
   }
   if (file === null) {
-    console.error("usage: run.mjs report <file.jsonl> [--pubkey <hex|file>] [--require-signatures] [--strict]");
+    console.error("usage: run.mjs report <file.jsonl> [--pubkey <hex|file>] [--require-signatures] [--allow-incomplete] [--require-known-profiles]");
     return 2;
   }
   if (requireSignatures && !pubkey) {
@@ -93,13 +96,13 @@ async function reportMode(args) {
       return 2;
     }
   }
-  const report = await te.verifyStream(read(file), { publicKey, requireSignatures, strict });
+  const report = await te.verifyStream(read(file), { publicKey, requireSignatures, allowIncomplete, requireKnownProfiles });
   if (report.signature_check === "unavailable") {
     console.error("Ed25519 is not available in this Node runtime; signatures were not checked");
     return 2;
   }
   process.stdout.write(JSON.stringify(te.reportToJSON(report), null, 2) + "\n");
-  return report.ok ? 0 : 1;
+  return te.exitCode(report);
 }
 
 // hash mode: the output members of `trail-evidence hash` (Go) and
@@ -293,12 +296,16 @@ async function checkIndex(dir) {
   for (const c of index.cases) {
     let publicKey = null;
     if (c.pubkey) publicKey = te.parsePublicKey(read(path.join(dir, c.pubkey)));
-    const name = c.file + (c.strict ? " [strict]" : "");
-    const report = await te.verifyStream(read(path.join(dir, c.file)), { publicKey, requireSignatures: !!c.require_signatures, strict: !!c.strict });
+    const name = c.file + (c.allow_incomplete ? " [allow-incomplete]" : "") + (c.require_known_profiles ? " [require-known-profiles]" : "");
+    const report = await te.verifyStream(read(path.join(dir, c.file)), {
+      publicKey, requireSignatures: !!c.require_signatures, allowIncomplete: !!c.allow_incomplete, requireKnownProfiles: !!c.require_known_profiles,
+    });
     check(report.signature_check !== "unavailable", `${name}: signatures were checked`);
     eq(report.ok, c.ok, `${name}: ok (${te.summary(report)})`);
-    eq(report.ok, report.errors === 0, `${name}: ok means no error`);
-    eq(report.strict, !!c.strict, `${name}: strict`);
+    eq(report.verdict, c.verdict, `${name}: verdict`);
+    eq(te.exitCode(report), c.exit_code, `${name}: exit code`);
+    eq(report.verdict === te.VERDICT_INVALID, report.errors > 0, `${name}: errors only with verdict invalid`);
+    eq([report.allow_incomplete, report.require_known_profiles], [!!c.allow_incomplete, !!c.require_known_profiles], `${name}: options`);
     eq(report.records, c.records, `${name}: records`);
     eq(report.restarts, c.restarts, `${name}: restarts`);
     const got = [];
@@ -322,14 +329,16 @@ async function testStreams() {
   // Summary lines must read exactly like the Go and Python CLIs.
   const pub = te.parsePublicKey(read(path.join(ROOT, "testdata", "keys", "test-ed25519.pub")));
   const lines = [
-    ["seq-mismatch.jsonl", {}, "FAIL: 3 record(s) in 1 stream(s), 1 error(s)"],
-    ["seq-gap.jsonl", {}, "OK: 4 record(s) in 1 stream(s), no invalid record, 1 unknown"],
-    ["seq-gap.jsonl", { strict: true }, "FAIL (strict): 4 record(s) in 1 stream(s), 1 error(s), 1 unknown"],
-    ["outside-scope.jsonl", {}, "OK: 4 record(s) in 1 stream(s), hash chain intact, 2 outside scope"],
-    ["restart.jsonl", {}, "OK: 4 record(s) in 1 stream(s), hash chain intact, 1 restart(s)"],
-    ["signed.jsonl", { publicKey: pub, requireSignatures: true }, "OK: 3 record(s) in 1 stream(s), hash chain intact, 3 signed record(s), 3 signature(s) verified"],
-    ["signed.jsonl", {}, "OK: 3 record(s) in 1 stream(s), hash chain intact, 3 signed record(s)"],
-    ["signature-invalid.jsonl", { publicKey: pub, requireSignatures: true }, "FAIL: 3 record(s) in 1 stream(s), 2 error(s), 2 signed record(s), 1 signature(s) verified"],
+    ["seq-mismatch.jsonl", {}, "INVALID: 3 record(s) in 1 stream(s), 1 error(s)"],
+    ["seq-gap.jsonl", {}, "INCOMPLETE: 4 record(s) in 1 stream(s), no invalid record, 1 unknown"],
+    ["seq-gap.jsonl", { allowIncomplete: true }, "INCOMPLETE (allowed): 4 record(s) in 1 stream(s), no invalid record, 1 unknown"],
+    ["outside-scope.jsonl", {}, "INCOMPLETE: 4 record(s) in 1 stream(s), hash chain intact, 2 outside scope"],
+    ["profile-unknown.jsonl", {}, "VALID: 3 record(s) in 1 stream(s), hash chain intact, 2 with unknown profile"],
+    ["profile-unknown.jsonl", { requireKnownProfiles: true }, "INCOMPLETE: 3 record(s) in 1 stream(s), hash chain intact, 2 with unknown profile"],
+    ["restart.jsonl", {}, "VALID: 4 record(s) in 1 stream(s), hash chain intact, 1 restart(s)"],
+    ["signed.jsonl", { publicKey: pub, requireSignatures: true }, "VALID: 3 record(s) in 1 stream(s), hash chain intact, 3 signed record(s), 3 signature(s) verified"],
+    ["signed.jsonl", {}, "VALID: 3 record(s) in 1 stream(s), hash chain intact, 3 signed record(s)"],
+    ["signature-invalid.jsonl", { publicKey: pub, requireSignatures: true }, "INVALID: 3 record(s) in 1 stream(s), 2 error(s), 2 signed record(s), 1 signature(s) verified"],
   ];
   for (const [file, opts, want] of lines) {
     eq(te.summary(await te.verifyStream(read(path.join(STREAMS, file)), opts)), want, `${file}: summary line`);
@@ -448,8 +457,8 @@ async function testProfiles() {
           examples++;
         }
       } else if (f.endsWith(".journal.jsonl")) {
-        const rep = await te.verifyStream(read(file), { strict: true });
-        check(rep.ok && rep.states.valid === rep.records && rep.profile_states.valid === rep.records, `${name}/${f}: ${te.summary(rep)}`);
+        const rep = await te.verifyStream(read(file), { requireKnownProfiles: true });
+        check(rep.ok && rep.verdict === te.VERDICT_VALID && rep.states.valid === rep.records && rep.profile_states.valid === rep.records, `${name}/${f}: ${te.summary(rep)}`);
         journals++;
       }
     }

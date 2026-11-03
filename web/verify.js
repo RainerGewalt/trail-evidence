@@ -52,8 +52,14 @@
   const NOTICE = "notice";
   const ERROR_CLASSES = [SCHEMA_INVALID, HASH_MISMATCH, CHAIN_BREAK, SEQ_MISMATCH, SIGNATURE_INVALID, PROFILE_INVALID];
   const NOTICE_CLASSES = [SEQ_GAP, OUTSIDE_SCOPE, PROFILE_UNKNOWN, RESTART, AFTER_UNKNOWN, LEGACY_INTEGER_SEQ, NUMBER_PRECISION];
-  // With strict verification these notices are reported as errors.
-  const STRICT_CLASSES = new Set([SEQ_GAP, OUTSIDE_SCOPE, PROFILE_UNKNOWN]);
+  // Journal verdicts (SPEC.md section 6.4) and exit codes of the verify command.
+  const VERDICT_VALID = "valid";
+  const VERDICT_INVALID = "invalid";
+  const VERDICT_INCOMPLETE = "incomplete";
+  const VERDICTS = [VERDICT_VALID, VERDICT_INVALID, VERDICT_INCOMPLETE];
+  const EXIT_VALID = 0;
+  const EXIT_INVALID = 1;
+  const EXIT_INCOMPLETE = 3;
 
   // Record states and profile states (SPEC.md section 6.1).
   const VALID = "valid";
@@ -1083,11 +1089,9 @@
 
   function addFindings(report, findings) {
     for (const f of findings) {
-      if (report.strict && STRICT_CLASSES.has(f.class)) f.severity = ERROR;
       report.findings.push(f);
       if (f.severity === ERROR) {
         report.errors++;
-        report.ok = false;
       } else {
         report.notices++;
       }
@@ -1099,22 +1103,41 @@
   // the Unicode Z categories, but not the byte order mark.
   const TRIM_RE = /^(?:[^\S﻿]|\u0085)+|(?:[^\S﻿]|\u0085)+$/g;
 
+  /** Compute verdict and ok from the record states (SPEC.md section 6.4). */
+  function finishReport(report) {
+    const unknownProfiles = report.require_known_profiles && report.profile_states[OUTSIDE] > 0;
+    if (report.states[INVALID]) report.verdict = VERDICT_INVALID;
+    else if (report.states[UNKNOWN] || report.states[OUTSIDE] || unknownProfiles) report.verdict = VERDICT_INCOMPLETE;
+    else report.verdict = VERDICT_VALID;
+    report.ok = report.verdict === VERDICT_VALID || (report.verdict === VERDICT_INCOMPLETE && report.allow_incomplete && !unknownProfiles);
+  }
+
+  /** Exit code of the verify command: 0 ok, 1 invalid, 3 incomplete. */
+  function exitCode(report) {
+    if (report.ok) return EXIT_VALID;
+    return report.verdict === VERDICT_INVALID ? EXIT_INVALID : EXIT_INCOMPLETE;
+  }
+
   /**
    * Verify a JSON Lines journal given as text. Options: publicKey
-   * (Uint8Array of 32 bytes, optional), requireSignatures (boolean), strict
-   * (boolean), onProgress(recordsSoFar) called every 500 records. Resolves
-   * to a report with the same members as the Go and Python JSON reports
-   * (seq values as BigInt in results, findings and streams; reportToJSON
-   * renders them as decimal strings), plus signature_check: "unavailable"
-   * when a key was given but this runtime cannot verify Ed25519 signatures.
+   * (Uint8Array of 32 bytes, optional), requireSignatures (boolean),
+   * allowIncomplete (boolean: accept the verdict incomplete),
+   * requireKnownProfiles (boolean: unknown profiles make the journal
+   * incomplete), onProgress(recordsSoFar) called every 500 records.
+   * Resolves to a report with the same members as the Go and Python JSON
+   * reports (seq values as BigInt in results, findings and streams;
+   * reportToJSON renders them as decimal strings), plus signature_check:
+   * "unavailable" when a key was given but this runtime cannot verify
+   * Ed25519 signatures.
    */
   async function verifyStream(text, options) {
-    const opts = Object.assign({ publicKey: null, requireSignatures: false, strict: false, onProgress: null }, options || {});
+    const opts = Object.assign({ publicKey: null, requireSignatures: false, allowIncomplete: false, requireKnownProfiles: false, onProgress: null }, options || {});
     if (opts.requireSignatures && !opts.publicKey) {
       throw new Error("requireSignatures needs a publicKey");
     }
     const report = {
-      ok: true, strict: !!opts.strict, records: 0, errors: 0, restarts: 0, signed_records: 0,
+      ok: true, verdict: VERDICT_VALID, allow_incomplete: !!opts.allowIncomplete, require_known_profiles: !!opts.requireKnownProfiles,
+      records: 0, errors: 0, restarts: 0, signed_records: 0,
       signatures_verified: 0, unsigned_records: 0, notices: 0,
       states: Object.fromEntries(STATES.map((k) => [k, 0])),
       profile_states: Object.fromEntries(PROFILE_STATES.map((k) => [k, 0])),
@@ -1166,17 +1189,19 @@
     }
     const ids = Array.from(streams.keys()).sort(compareCodePoints);
     for (const id of ids) report.streams.push(streams.get(id).summary);
+    finishReport(report);
     return report;
   }
 
   /** One-line summary in the style of the Go and Python CLIs. */
   function summary(r) {
-    let s = (r.ok ? "OK" : "FAIL") + (r.strict ? " (strict)" : "") + ": " + r.records + " record(s) in " + r.streams.length + " stream(s)";
-    if (r.ok && !r.states[UNKNOWN]) s += ", hash chain intact";
-    else if (r.ok) s += ", no invalid record";
-    else s += ", " + r.errors + " error(s)";
+    let s = r.verdict.toUpperCase() + (r.verdict === VERDICT_INCOMPLETE && r.ok ? " (allowed)" : "") + ": " + r.records + " record(s) in " + r.streams.length + " stream(s)";
+    if (r.verdict === VERDICT_INVALID) s += ", " + r.errors + " error(s)";
+    else if (r.states[UNKNOWN]) s += ", no invalid record";
+    else s += ", hash chain intact";
     if (r.states[UNKNOWN]) s += ", " + r.states[UNKNOWN] + " unknown";
     if (r.states[OUTSIDE]) s += ", " + r.states[OUTSIDE] + " outside scope";
+    if (r.profile_states[OUTSIDE]) s += ", " + r.profile_states[OUTSIDE] + " with unknown profile";
     if (r.restarts > 0) s += ", " + r.restarts + " restart(s)";
     if (r.signed_records > 0) {
       s += ", " + r.signed_records + " signed record(s)";
@@ -1190,7 +1215,7 @@
   /** The report as JSON members exactly like the Go CLI (seq as decimal strings, omitted when unknown). */
   function reportToJSON(report) {
     const out = {};
-    for (const k of ["ok", "strict", "records", "errors", "restarts", "signed_records", "signatures_verified", "unsigned_records", "notices"]) {
+    for (const k of ["ok", "verdict", "allow_incomplete", "require_known_profiles", "records", "errors", "restarts", "signed_records", "signatures_verified", "unsigned_records", "notices"]) {
       out[k] = report[k];
     }
     out.states = Object.assign({}, report.states);
@@ -1224,12 +1249,13 @@
     SCHEMA, HASH_PREFIX, GENESIS_HASH, SIGNATURE_ALG, MAX_SEQ,
     SCHEMA_INVALID, HASH_MISMATCH, CHAIN_BREAK, SEQ_MISMATCH, SIGNATURE_INVALID, PROFILE_INVALID,
     SEQ_GAP, OUTSIDE_SCOPE, PROFILE_UNKNOWN, RESTART, AFTER_UNKNOWN, LEGACY_INTEGER_SEQ, NUMBER_PRECISION,
-    ERROR, NOTICE, ERROR_CLASSES, NOTICE_CLASSES, STRICT_CLASSES: Array.from(STRICT_CLASSES),
+    ERROR, NOTICE, ERROR_CLASSES, NOTICE_CLASSES,
+    VERDICT_VALID, VERDICT_INVALID, VERDICT_INCOMPLETE, VERDICTS, EXIT_VALID, EXIT_INVALID, EXIT_INCOMPLETE,
     VALID, INVALID, UNKNOWN, OUTSIDE, PROFILE_NONE, STATES, PROFILE_STATES,
     canonicalize, canonicalBytes, escapeString, formatNumber,
     hashBytes, keyId, computeHashes,
     parsePublicKey, verifySignature, ed25519Available, Ed25519Unavailable, cryptoAvailable,
-    parseSeq, decodeProblems, validateStructure, checkRecord, verifyRecord, verifyStream, summary, reportToJSON, findingToJSON,
+    parseSeq, decodeProblems, validateStructure, checkRecord, verifyRecord, verifyStream, summary, exitCode, reportToJSON, findingToJSON,
     profiles, validateProfilePayload, compileProfileSchema,
     json: { memberSpans, arrayItems, scanValue, unsafeIntegers },
     bytes: { hex, fromHex, base64urlDecode },

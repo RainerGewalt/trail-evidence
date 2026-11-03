@@ -5,8 +5,10 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -31,6 +33,8 @@ type vectorFile struct {
 		ExpectedValid       bool            `json:"expected_valid"`
 		ExpectedError       string          `json:"expected_error"`
 		ExpectedNotices     []string        `json:"expected_notices"`
+		ExpectedState       string          `json:"expected_state"`
+		ExpectedProfile     string          `json:"expected_profile_state"`
 	} `json:"vectors"`
 }
 
@@ -71,9 +75,13 @@ func TestVectorsReproduce(t *testing.T) {
 			if h.ChainHash != v.ExpectedChainHash {
 				t.Errorf("chain_hash got %s want %s", h.ChainHash, v.ExpectedChainHash)
 			}
-			rec, findings := evidence.VerifyRecord(v.Record)
+			c := evidence.CheckRecord(v.Record)
+			rec, findings := c.Record, c.Findings
 			if rec == nil {
 				t.Fatalf("record did not decode: %v", findings)
+			}
+			if c.State != v.ExpectedState || c.ProfileState != v.ExpectedProfile {
+				t.Errorf("state %s/%s, want %s/%s", c.State, c.ProfileState, v.ExpectedState, v.ExpectedProfile)
 			}
 			var errs, notices []string
 			for _, f := range findings {
@@ -158,12 +166,15 @@ func TestVectorsSignature(t *testing.T) {
 
 type streamIndex struct {
 	Cases []struct {
-		File              string `json:"file"`
-		PublicKey         string `json:"pubkey"`
-		RequireSignatures bool   `json:"require_signatures"`
-		OK                bool   `json:"ok"`
-		Records           int    `json:"records"`
-		Restarts          int    `json:"restarts"`
+		File              string   `json:"file"`
+		PublicKey         string   `json:"pubkey"`
+		RequireSignatures bool     `json:"require_signatures"`
+		Strict            bool     `json:"strict"`
+		OK                bool     `json:"ok"`
+		Records           int      `json:"records"`
+		Restarts          int      `json:"restarts"`
+		States            []string `json:"states"`
+		ProfileStates     []string `json:"profile_states"`
 		Findings          []struct {
 			Index int    `json:"index"`
 			Class string `json:"class"`
@@ -195,7 +206,11 @@ func checkIndex(t *testing.T, dir string) {
 		t.Fatal("no stream cases")
 	}
 	for _, c := range idx.Cases {
-		t.Run(c.File, func(t *testing.T) {
+		name := c.File
+		if c.Strict {
+			name += "/strict"
+		}
+		t.Run(name, func(t *testing.T) {
 			f, err := os.Open(filepath.Join(dir, c.File))
 			if err != nil {
 				t.Fatal(err)
@@ -210,6 +225,7 @@ func checkIndex(t *testing.T, dir string) {
 				opts.PublicKey = pub
 				opts.RequireSignatures = c.RequireSignatures
 			}
+			opts.Strict = c.Strict
 			rep := evidence.VerifyStream(f, opts)
 			if rep.OK != c.OK {
 				t.Errorf("ok got %v want %v: %s", rep.OK, c.OK, rep.Summary())
@@ -223,7 +239,7 @@ func checkIndex(t *testing.T, dir string) {
 			var got []string
 			seen := map[string]bool{}
 			for _, f := range rep.Findings {
-				k := string(rune('0'+f.Index)) + ":" + f.Class
+				k := fmt.Sprintf("%d:%s", f.Index, f.Class)
 				if !seen[k] {
 					seen[k] = true
 					got = append(got, k)
@@ -231,10 +247,37 @@ func checkIndex(t *testing.T, dir string) {
 			}
 			var want []string
 			for _, f := range c.Findings {
-				want = append(want, string(rune('0'+f.Index))+":"+f.Class)
+				want = append(want, fmt.Sprintf("%d:%s", f.Index, f.Class))
 			}
 			if strings.Join(got, ",") != strings.Join(want, ",") {
 				t.Errorf("findings got %v want %v", got, want)
+			}
+			var gotStates, gotProfiles []string
+			for i, r := range rep.Results {
+				if r.Index != i {
+					t.Errorf("result %d has index %d", i, r.Index)
+				}
+				gotStates = append(gotStates, r.State)
+				gotProfiles = append(gotProfiles, r.ProfileState)
+			}
+			if strings.Join(gotStates, ",") != strings.Join(c.States, ",") {
+				t.Errorf("states got %v want %v", gotStates, c.States)
+			}
+			if strings.Join(gotProfiles, ",") != strings.Join(c.ProfileStates, ",") {
+				t.Errorf("profile states got %v want %v", gotProfiles, c.ProfileStates)
+			}
+			counts := map[string]int{}
+			for _, st := range c.States {
+				counts[st]++
+			}
+			if rep.States.Valid != counts["valid"] || rep.States.Invalid != counts["invalid"] || rep.States.Unknown != counts["unknown"] || rep.States.OutsideScope != counts["outside_scope"] {
+				t.Errorf("state counts %+v do not match %v", rep.States, c.States)
+			}
+			if rep.Strict != c.Strict {
+				t.Errorf("report strict %v, want %v", rep.Strict, c.Strict)
+			}
+			if rep.OK != (rep.Errors == 0) {
+				t.Errorf("ok %v but %d error(s)", rep.OK, rep.Errors)
 			}
 		})
 	}
@@ -329,7 +372,23 @@ func TestVerifyRecordSchemaChecks(t *testing.T) {
 		"bad event type":           mutate(`"event_type":"test.record.created"`, `"event_type":"Created"`),
 		"bad hash pattern":         mutate(`"prev_hash":"sha256:0`, `"prev_hash":"SHA256:0`),
 		"seconds only":             mutate(`08:00:00.000Z`, `08:00:00Z`),
-		"negative seq":             mutate(`"seq":0`, `"seq":-1`),
+		"negative seq":             mutate(`"seq":"0"`, `"seq":"-1"`),
+		"seq leading zero":         mutate(`"seq":"0"`, `"seq":"00"`),
+		"seq with sign":            mutate(`"seq":"0"`, `"seq":"+0"`),
+		"seq with whitespace":      mutate(`"seq":"0"`, `"seq":" 0"`),
+		"seq beyond uint64":        mutate(`"seq":"0"`, `"seq":"18446744073709551616"`),
+		"seq float literal":        mutate(`"seq":"0"`, `"seq":0.0`),
+		"seq negative zero":        mutate(`"seq":"0"`, `"seq":-0`),
+		"seq exponent":             mutate(`"seq":"0"`, `"seq":1e2`),
+		"seq boolean":              mutate(`"seq":"0"`, `"seq":true`),
+		"seq null":                 mutate(`"seq":"0"`, `"seq":null`),
+		"seq missing":              mutate(`"seq":"0",`, ``),
+		"profile wrong type":       mutate(`"schema":`, `"profile":7,"schema":`),
+		"profile no major":         mutate(`"schema":`, `"profile":"example.measurement","schema":`),
+		"profile major zero":       mutate(`"schema":`, `"profile":"example.measurement/0","schema":`),
+		"profile one segment":      mutate(`"schema":`, `"profile":"measurement/1","schema":`),
+		"schema not an identifier": mutate(`"schema":"trail.evidence/1"`, `"schema":"Trail Evidence"`),
+		"schema not a string":      mutate(`"schema":"trail.evidence/1"`, `"schema":1`),
 		"not an object":            []byte(`[1,2,3]`),
 		"trailing garbage":         append(append([]byte{}, base...), []byte(` {}`)...),
 	}
@@ -387,5 +446,197 @@ func TestParsePublicKey(t *testing.T) {
 	}
 	if _, err := evidence.ParsePublicKey("not-a-key"); err == nil {
 		t.Error("garbage should not parse")
+	}
+}
+
+func TestSeqForms(t *testing.T) {
+	vf := loadVectors(t)
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, vf.Vectors[0].Record); err != nil {
+		t.Fatal(err)
+	}
+	base := compact.String()
+	cases := []struct {
+		seq    string
+		ok     bool
+		legacy bool
+	}{
+		{`"0"`, true, false},
+		{`"18446744073709551615"`, true, false},
+		{`"9007199254740993"`, true, false},
+		{`"\u0037"`, true, false},
+		{`7`, true, true},
+		{`18446744073709551615`, true, true},
+		{`18446744073709551616`, false, false},
+		{`"18446744073709551616"`, false, false},
+		{`"007"`, false, false},
+		{`""`, false, false},
+		{`"7.0"`, false, false},
+		{`"1e3"`, false, false},
+		{`-1`, false, false},
+	}
+	for _, c := range cases {
+		raw := strings.Replace(base, `"seq":"0"`, `"seq":`+c.seq, 1)
+		rc := evidence.CheckRecord([]byte(raw))
+		var classes []string
+		for _, f := range rc.Findings {
+			classes = append(classes, f.Class)
+		}
+		hasSchema := strings.Contains(strings.Join(classes, ","), evidence.ClassSchemaInvalid)
+		hasLegacy := strings.Contains(strings.Join(classes, ","), evidence.ClassLegacyIntegerSeq)
+		if hasSchema == c.ok || hasLegacy != c.legacy {
+			t.Errorf("seq %s: findings %v, want usable=%v legacy=%v", c.seq, classes, c.ok, c.legacy)
+		}
+	}
+}
+
+func TestSealWritesDecimalSeq(t *testing.T) {
+	r := evidence.Record{
+		Producer:  evidence.Producer{Kind: evidence.ProducerOther, ID: "t", Version: "1"},
+		StreamID:  "t",
+		Seq:       evidence.MaxSeq,
+		EventType: "test.seal.seq",
+		Time:      evidence.Time{RecordedAt: "2026-11-02T00:00:00.000Z", Source: evidence.TimeSourceSystem},
+		Actor:     evidence.Actor{Auth: evidence.AuthNone},
+		Policy:    evidence.NoPolicy,
+		Profile:   "example.measurement/1",
+		Payload:   json.RawMessage(`{"quantity":"q","value":"1","unit":"u"}`),
+	}
+	if err := evidence.Seal(&r, evidence.GenesisHash); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(&r)
+	if !bytes.Contains(raw, []byte(`"seq":"18446744073709551615"`)) {
+		t.Errorf("seq is not written as a decimal string: %s", raw)
+	}
+	c := evidence.CheckRecord(raw)
+	if c.State != evidence.StateValid || c.ProfileState != evidence.StateValid || len(c.Findings) != 0 {
+		t.Errorf("sealed record: %s/%s %+v", c.State, c.ProfileState, c.Findings)
+	}
+	var back evidence.Record
+	if err := json.Unmarshal(raw, &back); err != nil || back.Seq != evidence.MaxSeq || back.Profile != r.Profile {
+		t.Errorf("round trip: %v %d %q", err, back.Seq, back.Profile)
+	}
+}
+
+type profileExamples struct {
+	Profile string `json:"profile"`
+	Valid   []struct {
+		Description string          `json:"description"`
+		Payload     json.RawMessage `json:"payload"`
+	} `json:"valid"`
+	Invalid []struct {
+		Description string          `json:"description"`
+		Payload     json.RawMessage `json:"payload"`
+	} `json:"invalid"`
+}
+
+// TestProfileExamples checks every profile's example payloads against the
+// embedded registry.
+func TestProfileExamples(t *testing.T) {
+	files, err := filepath.Glob(filepath.Join(repoRoot, "profiles", "*", "*.examples.json"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("no profile examples (%v)", err)
+	}
+	for _, path := range files {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ex profileExamples
+		if err := json.Unmarshal(raw, &ex); err != nil {
+			t.Fatal(err)
+		}
+		if len(ex.Valid) == 0 || len(ex.Invalid) == 0 {
+			t.Errorf("%s: needs valid and invalid examples", path)
+		}
+		for _, v := range ex.Valid {
+			known, problems := evidence.ValidateProfilePayload(ex.Profile, v.Payload)
+			if !known || len(problems) != 0 {
+				t.Errorf("%s: valid example %q: known=%v %v", ex.Profile, v.Description, known, problems)
+			}
+		}
+		for _, v := range ex.Invalid {
+			known, problems := evidence.ValidateProfilePayload(ex.Profile, v.Payload)
+			if !known || len(problems) == 0 {
+				t.Errorf("%s: invalid example %q passed", ex.Profile, v.Description)
+			}
+		}
+	}
+	if known, _ := evidence.ValidateProfilePayload("example.measurement/2", json.RawMessage(`{}`)); known {
+		t.Error("example.measurement/2 must not be known")
+	}
+}
+
+// TestEmbeddedProfilesMatchRegistry: the embedded copy under go/evidence/profiles
+// must equal profiles/ at the repository root (scripts/profiles.py --write).
+func TestEmbeddedProfilesMatchRegistry(t *testing.T) {
+	files, err := filepath.Glob(filepath.Join(repoRoot, "profiles", "*", "*.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want []string
+	for _, path := range files {
+		name := filepath.Base(filepath.Dir(path))
+		major := strings.TrimSuffix(filepath.Base(path), ".schema.json")
+		id := name + "/" + major
+		want = append(want, id)
+		root, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		embedded, ok := evidence.ProfileSchema(id)
+		if !ok || !bytes.Equal(root, embedded) {
+			t.Errorf("%s: embedded schema differs from profiles/ (run scripts/profiles.py --write)", id)
+		}
+	}
+	sort.Strings(want)
+	if strings.Join(want, ",") != strings.Join(evidence.Profiles(), ",") {
+		t.Errorf("registry %v, embedded %v", want, evidence.Profiles())
+	}
+}
+
+// TestProfileJournals: every journal in the registry verifies, strictly, with
+// every record valid and every profile valid.
+func TestProfileJournals(t *testing.T) {
+	files, err := filepath.Glob(filepath.Join(repoRoot, "profiles", "*", "*.journal.jsonl"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("no profile journals (%v)", err)
+	}
+	for _, path := range files {
+		f, err := os.Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rep := evidence.VerifyStream(f, evidence.Options{Strict: true})
+		f.Close()
+		if !rep.OK || rep.States.Valid != rep.Records || rep.ProfileStates.Valid != rep.Records {
+			t.Errorf("%s: %s %+v %+v", path, rep.Summary(), rep.States, rep.ProfileStates)
+		}
+	}
+}
+
+func TestSummaryLines(t *testing.T) {
+	cases := []struct {
+		file   string
+		strict bool
+		want   string
+	}{
+		{"valid-chain.jsonl", false, "OK: 3 record(s) in 1 stream(s), hash chain intact"},
+		{"seq-gap.jsonl", false, "OK: 4 record(s) in 1 stream(s), no invalid record, 1 unknown"},
+		{"seq-gap.jsonl", true, "FAIL (strict): 4 record(s) in 1 stream(s), 1 error(s), 1 unknown"},
+		{"outside-scope.jsonl", false, "OK: 4 record(s) in 1 stream(s), hash chain intact, 2 outside scope"},
+		{"seq-mismatch.jsonl", false, "FAIL: 3 record(s) in 1 stream(s), 1 error(s)"},
+	}
+	for _, c := range cases {
+		f, err := os.Open(filepath.Join(repoRoot, "testdata", "streams", c.file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := evidence.VerifyStream(f, evidence.Options{Strict: c.strict}).Summary()
+		f.Close()
+		if got != c.want {
+			t.Errorf("%s strict=%v:\n got %s\nwant %s", c.file, c.strict, got, c.want)
+		}
 	}
 }

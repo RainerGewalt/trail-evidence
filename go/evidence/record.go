@@ -5,6 +5,11 @@ import "encoding/json"
 // Schema is the only schema identifier accepted by this implementation.
 const Schema = "trail.evidence/1"
 
+// MaxSeq is the largest seq value a record may carry (the uint64 range). seq
+// is written as a JSON string in canonical decimal form, "0" to
+// "18446744073709551615".
+const MaxSeq = ^uint64(0)
+
 // HashPrefix precedes every hex-encoded SHA-256 digest in a record.
 const HashPrefix = "sha256:"
 
@@ -105,11 +110,17 @@ type Anchor struct {
 
 // Record is one Trail Evidence Record. Field order matches the layout used in
 // the specification; JCS sorts members anyway, so order never affects hashes.
+//
+// Seq is encoded as a JSON string in canonical decimal form ("7"), as SPEC.md
+// section 3.1 requires. Decoding a record with encoding/json accepts that
+// form only; the verifier (CheckRecord, VerifyStream) also reads the legacy
+// integer form of 0.1 journals.
 type Record struct {
 	Schema        string          `json:"schema"`
+	Profile       string          `json:"profile,omitempty"`
 	Producer      Producer        `json:"producer"`
 	StreamID      string          `json:"stream_id"`
-	Seq           uint64          `json:"seq"`
+	Seq           uint64          `json:"seq,string"`
 	ChainRestart  bool            `json:"chain_restart,omitempty"`
 	AnchorHash    string          `json:"anchor_hash,omitempty"`
 	PrevHash      string          `json:"prev_hash"`
@@ -134,6 +145,7 @@ type Record struct {
 var coreMembers = []string{
 	"schema", "producer", "stream_id", "seq", "prev_hash", "event_type",
 	"time", "actor", "policy", "content_hash", "chain_restart", "anchor_hash",
+	"profile",
 }
 
 // MarshalJSON renders the record as compact JSON without HTML escaping, so the

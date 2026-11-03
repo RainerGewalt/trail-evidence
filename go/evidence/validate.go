@@ -7,10 +7,22 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
 var (
+	// seqPattern is the canonical decimal form of seq: no sign, no leading
+	// zeros, no fraction or exponent. The value must also fit uint64.
+	seqPattern = regexp.MustCompile(`^(0|[1-9][0-9]*)$`)
+	// profilePattern is <name>/<major>: a dotted lowercase name with at
+	// least two segments and a major version >= 1 without leading zeros.
+	profilePattern = regexp.MustCompile(`^[a-z][a-z0-9]*(\.[a-z][a-z0-9_]*)+/[1-9][0-9]*$`)
+	// schemaIDPattern recognises a schema member that names another format
+	// or another major version (<name>/<major>). A record whose schema
+	// matches it and is not Schema is outside the scope of this verifier.
+	schemaIDPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]*(\.[a-z][a-z0-9_-]*)*/(0|[1-9][0-9]*)$`)
+
 	hashPattern       = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 	recordedAtPattern = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3,9}Z$`)
 	timestampPattern  = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,9})?Z$`)
@@ -35,7 +47,7 @@ var knownMembers = enum(
 	"schema", "producer", "stream_id", "seq", "prev_hash", "event_type",
 	"time", "actor", "policy", "payload", "content_hash", "chain_hash",
 	"chain_restart", "anchor_hash", "signature", "correlation_id", "job_id",
-	"decision_id", "context", "redaction", "anchor",
+	"decision_id", "context", "redaction", "anchor", "profile",
 )
 
 func enum(vals ...string) map[string]bool {
@@ -46,13 +58,78 @@ func enum(vals ...string) map[string]bool {
 	return m
 }
 
+// seqInfo is what a verifier knows about the seq member of a record.
+type seqInfo struct {
+	present bool   // the member exists (it may be null or malformed)
+	ok      bool   // usable: canonical decimal string or legacy integer, <= MaxSeq
+	legacy  bool   // usable, but written as a JSON number (0.1 form)
+	value   uint64 // the value when ok
+}
+
+// parseSeq reads seq from the raw member. A JSON string must match
+// seqPattern; a JSON number is the legacy form and must be an integer
+// literal of the same shape. Both must not exceed MaxSeq. Values are parsed
+// from the literal text, never through a float.
+func parseSeq(obj map[string]json.RawMessage) seqInfo {
+	raw, ok := obj["seq"]
+	if !ok {
+		return seqInfo{}
+	}
+	info := seqInfo{present: true}
+	t := bytes.TrimSpace(raw)
+	text := string(t)
+	if len(t) > 0 && t[0] == '"' {
+		var s string
+		if err := json.Unmarshal(t, &s); err != nil {
+			return info
+		}
+		text = s
+	} else {
+		info.legacy = true
+	}
+	if !seqPattern.MatchString(text) {
+		return seqInfo{present: true}
+	}
+	v, err := strconv.ParseUint(text, 10, 64)
+	if err != nil {
+		return seqInfo{present: true}
+	}
+	info.ok = true
+	info.value = v
+	return info
+}
+
+// foreignSchema reports whether the record names another format or another
+// major version in its schema member, and returns that name.
+func foreignSchema(obj map[string]json.RawMessage) (string, bool) {
+	raw, ok := obj["schema"]
+	if !ok {
+		return "", false
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return "", false
+	}
+	if s == Schema || !schemaIDPattern.MatchString(s) {
+		return "", false
+	}
+	return s, true
+}
+
 // decodeRecord parses raw strictly into a Record. Unknown members anywhere in
-// the typed part of the record are an error, as are type mismatches.
+// the typed part of the record are an error, as are type mismatches. seq is
+// not decoded here: parseSeq reads it from the raw member, so that a
+// malformed seq is a structural problem of an otherwise readable record.
 func decodeRecord(raw []byte) (*Record, error) {
+	type plain Record
+	var r Record
+	aux := struct {
+		*plain
+		Seq json.RawMessage `json:"seq"`
+	}{plain: (*plain)(&r)}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
-	var r Record
-	if err := dec.Decode(&r); err != nil {
+	if err := dec.Decode(&aux); err != nil {
 		return nil, err
 	}
 	return &r, nil
@@ -61,7 +138,7 @@ func decodeRecord(raw []byte) (*Record, error) {
 // validateStructure performs the schema checks that do not need the JSON
 // Schema file: required members, enumerations, patterns and the restart
 // invariants. It returns one message per problem, sorted for stable output.
-func validateStructure(obj map[string]json.RawMessage, r *Record) []string {
+func validateStructure(obj map[string]json.RawMessage, r *Record, seq seqInfo) []string {
 	var problems []string
 	add := func(format string, args ...any) {
 		problems = append(problems, fmt.Sprintf(format, args...))
@@ -110,6 +187,12 @@ func validateStructure(obj map[string]json.RawMessage, r *Record) []string {
 	}
 	if _, ok := obj["stream_id"]; ok && r.StreamID == "" {
 		add("stream_id must not be empty")
+	}
+	if seq.present && !seq.ok && strings.TrimSpace(string(obj["seq"])) != "null" {
+		add("seq must be a decimal string from \"0\" to \"18446744073709551615\" without sign, leading zeros or fraction, got %s", strings.TrimSpace(string(obj["seq"])))
+	}
+	if p, ok := obj["profile"]; ok && strings.TrimSpace(string(p)) != "null" && !profilePattern.MatchString(r.Profile) {
+		add("profile %q is not of the form <name>/<major>", r.Profile)
 	}
 	if _, ok := obj["prev_hash"]; ok && !hashPattern.MatchString(r.PrevHash) {
 		add("prev_hash does not match sha256:<64 hex>")

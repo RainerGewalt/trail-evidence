@@ -13,58 +13,121 @@ import (
 )
 
 // Finding classes. Every finding a verifier reports belongs to exactly one.
+// SPEC.md section 6.2 defines them.
 const (
+	// Errors: the record is in state invalid.
+	ClassSchemaInvalid    = "schema_invalid"
 	ClassHashMismatch     = "hash_mismatch"
 	ClassChainBreak       = "chain_break"
-	ClassSeqGap           = "seq_gap"
-	ClassRestart          = "restart"
+	ClassSeqMismatch      = "seq_mismatch"
 	ClassSignatureInvalid = "signature_invalid"
-	ClassSchemaInvalid    = "schema_invalid"
-	// ClassNumberPrecision is a notice: payload carries an integer outside
-	// +/-2^53, which JCS (ES6 number semantics) cannot represent exactly.
+	ClassProfileInvalid   = "profile_invalid"
+
+	// Notices. seq_gap makes the record unknown; outside_scope marks a
+	// record that is not checked. With Options.Strict, seq_gap,
+	// outside_scope and profile_unknown are reported with severity error.
+	ClassSeqGap           = "seq_gap"
+	ClassOutsideScope     = "outside_scope"
+	ClassProfileUnknown   = "profile_unknown"
+	ClassRestart          = "restart"
+	ClassAfterUnknown     = "after_unknown"
+	ClassLegacyIntegerSeq = "legacy_integer_seq"
+	// ClassNumberPrecision: payload carries an integer outside +/-2^53,
+	// which JCS (ES6 number semantics) cannot represent exactly.
 	ClassNumberPrecision = "number_precision"
 )
 
-// Finding severities. ClassRestart and ClassNumberPrecision are notices;
-// everything else is an error that makes the report fail.
+// Finding severities.
 const (
 	SeverityError  = "error"
 	SeverityNotice = "notice"
 )
 
-// Finding is one observation about one record.
+// Record states (SPEC.md section 6.1). A record's state depends on the
+// record and its stream, never on Options.Strict.
+const (
+	StateValid        = "valid"
+	StateInvalid      = "invalid"
+	StateUnknown      = "unknown"
+	StateOutsideScope = "outside_scope"
+)
+
+// Profile states. A profile state is ProfileNone, or one of StateValid,
+// StateInvalid and StateOutsideScope.
+const ProfileNone = "none"
+
+// errorClasses put a record into state invalid.
+var errorClasses = enum(ClassSchemaInvalid, ClassHashMismatch, ClassChainBreak, ClassSeqMismatch, ClassSignatureInvalid, ClassProfileInvalid)
+
+// strictClasses are notices that strict verification reports as errors.
+var strictClasses = enum(ClassSeqGap, ClassOutsideScope, ClassProfileUnknown)
+
+// Finding is one observation about one record. Seq is the record's seq when
+// it is usable; it is encoded as a decimal string.
 type Finding struct {
 	Index    int     `json:"index"`
 	Line     int     `json:"line"`
 	StreamID string  `json:"stream_id,omitempty"`
-	Seq      *uint64 `json:"seq,omitempty"`
+	Seq      *uint64 `json:"seq,omitempty,string"`
 	Class    string  `json:"class"`
 	Severity string  `json:"severity"`
 	Message  string  `json:"message"`
 }
 
 // StreamSummary describes one hash chain seen while verifying a journal.
+// Records counts the records that took part in the chain checks.
 type StreamSummary struct {
 	StreamID      string `json:"stream_id"`
 	Records       int    `json:"records"`
-	FirstSeq      uint64 `json:"first_seq"`
-	LastSeq       uint64 `json:"last_seq"`
+	FirstSeq      uint64 `json:"first_seq,string"`
+	LastSeq       uint64 `json:"last_seq,string"`
 	LastChainHash string `json:"last_chain_hash"`
 	Restarts      int    `json:"restarts"`
 }
 
+// StateCounts counts records per state.
+type StateCounts struct {
+	Valid        int `json:"valid"`
+	Invalid      int `json:"invalid"`
+	Unknown      int `json:"unknown"`
+	OutsideScope int `json:"outside_scope"`
+}
+
+// ProfileStateCounts counts records per profile state.
+type ProfileStateCounts struct {
+	None         int `json:"none"`
+	Valid        int `json:"valid"`
+	Invalid      int `json:"invalid"`
+	OutsideScope int `json:"outside_scope"`
+}
+
+// RecordResult is the verdict on one record of a journal.
+type RecordResult struct {
+	Index        int     `json:"index"`
+	Line         int     `json:"line"`
+	StreamID     string  `json:"stream_id,omitempty"`
+	Seq          *uint64 `json:"seq,omitempty,string"`
+	State        string  `json:"state"`
+	Profile      string  `json:"profile,omitempty"`
+	ProfileState string  `json:"profile_state"`
+}
+
 // Report is the outcome of VerifyStream.
 type Report struct {
-	OK                 bool            `json:"ok"`
-	Records            int             `json:"records"`
-	Errors             int             `json:"errors"`
-	Restarts           int             `json:"restarts"`
-	SignedRecords      int             `json:"signed_records"`
-	SignaturesVerified int             `json:"signatures_verified"`
-	UnsignedRecords    int             `json:"unsigned_records"`
-	Notices            int             `json:"notices"`
-	Streams            []StreamSummary `json:"streams"`
-	Findings           []Finding       `json:"findings"`
+	OK                 bool               `json:"ok"`
+	Strict             bool               `json:"strict"`
+	Records            int                `json:"records"`
+	Errors             int                `json:"errors"`
+	Restarts           int                `json:"restarts"`
+	SignedRecords      int                `json:"signed_records"`
+	SignaturesVerified int                `json:"signatures_verified"`
+	UnsignedRecords    int                `json:"unsigned_records"`
+	Notices            int                `json:"notices"`
+	States             StateCounts        `json:"states"`
+	ProfileStates      ProfileStateCounts `json:"profile_states"`
+	Streams            []StreamSummary    `json:"streams"`
+	Results            []RecordResult     `json:"results"`
+	Findings           []Finding          `json:"findings"`
 }
 
 // Options control VerifyStream.
@@ -74,6 +137,10 @@ type Options struct {
 	// RequireSignatures reports an unsigned record as signature_invalid.
 	// It only has an effect together with PublicKey.
 	RequireSignatures bool
+	// Strict reports seq_gap, outside_scope and profile_unknown with
+	// severity error, so that the journal verifies only when every record
+	// is valid and every profile was checked.
+	Strict bool
 }
 
 // Summary renders the report in one line, in the style of
@@ -81,15 +148,27 @@ type Options struct {
 func (r Report) Summary() string {
 	var b strings.Builder
 	if r.OK {
-		b.WriteString("OK: ")
+		b.WriteString("OK")
 	} else {
-		b.WriteString("FAIL: ")
+		b.WriteString("FAIL")
 	}
-	fmt.Fprintf(&b, "%d record(s) in %d stream(s)", r.Records, len(r.Streams))
-	if r.OK {
+	if r.Strict {
+		b.WriteString(" (strict)")
+	}
+	fmt.Fprintf(&b, ": %d record(s) in %d stream(s)", r.Records, len(r.Streams))
+	switch {
+	case r.OK && r.States.Unknown == 0:
 		b.WriteString(", hash chain intact")
-	} else {
+	case r.OK:
+		b.WriteString(", no invalid record")
+	default:
 		fmt.Fprintf(&b, ", %d error(s)", r.Errors)
+	}
+	if r.States.Unknown > 0 {
+		fmt.Fprintf(&b, ", %d unknown", r.States.Unknown)
+	}
+	if r.States.OutsideScope > 0 {
+		fmt.Fprintf(&b, ", %d outside scope", r.States.OutsideScope)
 	}
 	if r.Restarts > 0 {
 		fmt.Fprintf(&b, ", %d restart(s)", r.Restarts)
@@ -103,45 +182,125 @@ func (r Report) Summary() string {
 	return b.String()
 }
 
-// VerifyRecord checks one record on its own: strict decoding, structural
-// rules and both hashes. Chain checks need the stream and are done by
-// VerifyStream. The returned Record is nil when the bytes could not be
-// decoded; findings have Index and Line zero.
-func VerifyRecord(raw []byte) (*Record, []Finding) {
-	var findings []Finding
+// RecordCheck is the outcome of checking one record on its own, without the
+// stream around it.
+type RecordCheck struct {
+	// Record is nil when the bytes are not a decodable record of this
+	// contract (not JSON, not an object, unknown members, wrong types, or
+	// outside the scope of this verifier).
+	Record   *Record
+	Findings []Finding
+	// State is StateValid, StateInvalid or StateOutsideScope. StateUnknown
+	// needs the stream and is only assigned by VerifyStream.
+	State        string
+	Profile      string
+	ProfileState string
+
+	seq     seqInfo
+	restart bool // chain_restart is true and anchor_hash is present
+}
+
+// positioned reports whether the record has a place in a stream: a decoded
+// record with a non-empty stream_id and a usable seq. Only positioned records
+// take part in the chain checks.
+func (c RecordCheck) positioned() bool {
+	return c.Record != nil && c.Record.StreamID != "" && c.seq.ok
+}
+
+// CheckRecord checks one record on its own: scope, strict decoding,
+// structural rules, both hashes and the profile. Chain checks need the
+// stream and are done by VerifyStream. Findings have Index and Line zero.
+func CheckRecord(raw []byte) RecordCheck {
+	c := RecordCheck{ProfileState: ProfileNone}
 	obj, err := decodeObject(raw)
 	if err != nil {
-		return nil, []Finding{{Class: ClassSchemaInvalid, Severity: SeverityError, Message: err.Error()}}
+		c.Findings = []Finding{schemaFinding([]string{err.Error()})}
+		c.State = StateInvalid
+		return c
 	}
+	if name, ok := foreignSchema(obj); ok {
+		c.Findings = []Finding{{Class: ClassOutsideScope, Severity: SeverityNotice,
+			Message: fmt.Sprintf("schema %q is not %s; the record is not checked and does not take part in any chain", name, Schema)}}
+		c.State = StateOutsideScope
+		return c
+	}
+	c.seq = parseSeq(obj)
 	rec, err := decodeRecord(raw)
 	if err != nil {
-		findings = append(findings, Finding{Class: ClassSchemaInvalid, Severity: SeverityError, Message: err.Error()})
-		for _, p := range validateStructure(obj, nil) {
-			findings = append(findings, Finding{Class: ClassSchemaInvalid, Severity: SeverityError, Message: p})
+		problems := append([]string{err.Error()}, validateStructure(obj, nil, c.seq)...)
+		c.Findings = []Finding{schemaFinding(problems)}
+		c.State = StateInvalid
+		return c
+	}
+	if c.seq.ok {
+		rec.Seq = c.seq.value
+	}
+	c.Record = rec
+	_, hasAnchor := obj["anchor_hash"]
+	c.restart = rec.ChainRestart && hasAnchor
+
+	problems := validateStructure(obj, rec, c.seq)
+	h, herr := computeHashes(obj)
+	if herr != nil {
+		problems = append(problems, herr.Error())
+	}
+	if len(problems) > 0 {
+		c.Findings = append(c.Findings, schemaFinding(problems))
+	}
+	if herr == nil {
+		if h.ContentHash != rec.ContentHash {
+			c.Findings = append(c.Findings, Finding{Class: ClassHashMismatch, Severity: SeverityError,
+				Message: fmt.Sprintf("content_hash mismatch: recorded %s, computed %s", rec.ContentHash, h.ContentHash)})
 		}
-		return nil, findings
+		if h.ChainHash != rec.ChainHash {
+			c.Findings = append(c.Findings, Finding{Class: ClassHashMismatch, Severity: SeverityError,
+				Message: fmt.Sprintf("chain_hash mismatch: recorded %s, computed %s", rec.ChainHash, h.ChainHash)})
+		}
+		if n := unsafeIntegers(rec.Payload); n > 0 {
+			c.Findings = append(c.Findings, Finding{Class: ClassNumberPrecision, Severity: SeverityNotice,
+				Message: fmt.Sprintf("payload contains %d integer(s) outside +/-2^53; JCS renders them as IEEE-754 doubles, transport such values as strings", n)})
+		}
 	}
-	for _, p := range validateStructure(obj, rec) {
-		findings = append(findings, Finding{Class: ClassSchemaInvalid, Severity: SeverityError, Message: p})
+	if c.seq.legacy && c.seq.ok {
+		c.Findings = append(c.Findings, Finding{Class: ClassLegacyIntegerSeq, Severity: SeverityNotice,
+			Message: fmt.Sprintf("seq %d is a JSON number; write it as the string \"%d\" (accepted during 0.x, schema_invalid from 1.0)", c.seq.value, c.seq.value)})
 	}
-	h, err := ComputeHashes(raw)
-	if err != nil {
-		findings = append(findings, Finding{Class: ClassSchemaInvalid, Severity: SeverityError, Message: err.Error()})
-		return rec, findings
+	var pf *Finding
+	c.Profile, c.ProfileState, pf = checkProfile(obj, rec)
+	if pf != nil {
+		c.Findings = append(c.Findings, *pf)
 	}
-	if h.ContentHash != rec.ContentHash {
-		findings = append(findings, Finding{Class: ClassHashMismatch, Severity: SeverityError,
-			Message: fmt.Sprintf("content_hash mismatch: recorded %s, computed %s", rec.ContentHash, h.ContentHash)})
+	c.State = stateOf(c.Findings)
+	return c
+}
+
+// VerifyRecord checks one record on its own: strict decoding, structural
+// rules, both hashes and the profile. It returns the decoded record (nil when
+// the bytes could not be decoded or are outside the scope of this verifier)
+// and the findings; findings have Index and Line zero. CheckRecord returns
+// the record's state as well.
+func VerifyRecord(raw []byte) (*Record, []Finding) {
+	c := CheckRecord(raw)
+	return c.Record, c.Findings
+}
+
+func schemaFinding(problems []string) Finding {
+	return Finding{Class: ClassSchemaInvalid, Severity: SeverityError, Message: strings.Join(problems, "; ")}
+}
+
+// stateOf derives a record state from its findings, by class: any error
+// class makes the record invalid, otherwise seq_gap makes it unknown.
+func stateOf(fs []Finding) string {
+	state := StateValid
+	for _, f := range fs {
+		if errorClasses[f.Class] {
+			return StateInvalid
+		}
+		if f.Class == ClassSeqGap {
+			state = StateUnknown
+		}
 	}
-	if h.ChainHash != rec.ChainHash {
-		findings = append(findings, Finding{Class: ClassHashMismatch, Severity: SeverityError,
-			Message: fmt.Sprintf("chain_hash mismatch: recorded %s, computed %s", rec.ChainHash, h.ChainHash)})
-	}
-	if n := unsafeIntegers(rec.Payload); n > 0 {
-		findings = append(findings, Finding{Class: ClassNumberPrecision, Severity: SeverityNotice,
-			Message: fmt.Sprintf("payload contains %d integer(s) outside +/-2^53; JCS renders them as IEEE-754 doubles, transport such values as strings", n)})
-	}
-	return rec, findings
+	return state
 }
 
 // maxSafeInteger is the largest integer JCS (ES6 number semantics) keeps exact.
@@ -171,17 +330,19 @@ func unsafeIntegers(raw json.RawMessage) int {
 }
 
 type streamState struct {
-	summary StreamSummary
-	seen    bool
+	summary     StreamSummary
+	seen        bool
+	lastUnknown bool // the last positioned record of the stream is unknown
 }
 
 // VerifyStream reads a JSON Lines journal and checks every record against
-// SPEC.md: schema, content_hash, chain_hash, prev_hash link, seq continuity,
-// restarts and, when a key is given, signatures. Blank lines are skipped.
-// Verification continues after an error so that a report lists every problem;
-// chain state is advanced with the record's declared chain_hash.
+// SPEC.md: scope, schema, content_hash, chain_hash, prev_hash link, seq,
+// restarts, profiles and, when a key is given, signatures. Blank lines are
+// skipped. Verification continues after an error so that a report lists
+// every problem; chain state is advanced with the record's declared
+// chain_hash.
 func VerifyStream(rd io.Reader, opts Options) Report {
-	rep := Report{OK: true, Findings: []Finding{}, Streams: []StreamSummary{}}
+	rep := Report{OK: true, Strict: opts.Strict, Findings: []Finding{}, Streams: []StreamSummary{}, Results: []RecordResult{}}
 	streams := map[string]*streamState{}
 	br := bufio.NewReader(rd)
 	line := 0
@@ -201,25 +362,7 @@ func VerifyStream(rd io.Reader, opts Options) Report {
 		}
 		index++
 		rep.Records++
-		rec, findings := VerifyRecord(trimmed)
-		for i := range findings {
-			findings[i].Index = index
-			findings[i].Line = line
-			if rec != nil {
-				findings[i].StreamID = rec.StreamID
-				seq := rec.Seq
-				findings[i].Seq = &seq
-			}
-		}
-		rep.add(findings...)
-		if rec == nil {
-			if err != nil {
-				break
-			}
-			continue
-		}
-		rep.add(checkChain(streams, rec, index, line)...)
-		rep.add(checkSignature(opts, rec, index, line, &rep)...)
+		rep.verifyLine(streams, trimmed, index, line, opts)
 		if err != nil {
 			break
 		}
@@ -235,8 +378,69 @@ func VerifyStream(rd io.Reader, opts Options) Report {
 	return rep
 }
 
-func (r *Report) add(fs ...Finding) {
+func (rep *Report) verifyLine(streams map[string]*streamState, raw []byte, index, line int, opts Options) {
+	c := CheckRecord(raw)
+	res := RecordResult{Index: index, Line: line, Profile: c.Profile, ProfileState: c.ProfileState}
+	fs := c.Findings
+	if c.Record != nil {
+		res.StreamID = c.Record.StreamID
+		if c.seq.ok {
+			seq := c.seq.value
+			res.Seq = &seq
+		}
+		if c.positioned() {
+			st := streams[c.Record.StreamID]
+			if st == nil {
+				st = &streamState{summary: StreamSummary{StreamID: c.Record.StreamID, FirstSeq: c.seq.value}}
+				streams[c.Record.StreamID] = st
+			}
+			fs = append(fs, checkChain(st, c)...)
+		}
+		fs = append(fs, checkSignature(opts, c.Record, rep)...)
+	}
+	if c.State == StateOutsideScope {
+		res.State = StateOutsideScope
+	} else {
+		res.State = stateOf(fs)
+	}
+	if c.positioned() {
+		streams[c.Record.StreamID].lastUnknown = res.State == StateUnknown
+	}
+	for i := range fs {
+		fs[i].Index = index
+		fs[i].Line = line
+		fs[i].StreamID = res.StreamID
+		fs[i].Seq = res.Seq
+	}
+	rep.add(opts.Strict, fs...)
+	rep.Results = append(rep.Results, res)
+	switch res.State {
+	case StateValid:
+		rep.States.Valid++
+	case StateInvalid:
+		rep.States.Invalid++
+	case StateUnknown:
+		rep.States.Unknown++
+	case StateOutsideScope:
+		rep.States.OutsideScope++
+	}
+	switch res.ProfileState {
+	case ProfileNone:
+		rep.ProfileStates.None++
+	case StateValid:
+		rep.ProfileStates.Valid++
+	case StateInvalid:
+		rep.ProfileStates.Invalid++
+	case StateOutsideScope:
+		rep.ProfileStates.OutsideScope++
+	}
+}
+
+func (r *Report) add(strict bool, fs ...Finding) {
 	for _, f := range fs {
+		if strict && strictClasses[f.Class] {
+			f.Severity = SeverityError
+		}
 		r.Findings = append(r.Findings, f)
 		switch f.Severity {
 		case SeverityError:
@@ -244,71 +448,112 @@ func (r *Report) add(fs ...Finding) {
 			r.OK = false
 		case SeverityNotice:
 			r.Notices++
-			if f.Class == ClassRestart {
-				r.Restarts++
-			}
+		}
+		if f.Class == ClassRestart {
+			r.Restarts++
 		}
 	}
 }
 
-func finding(rec *Record, index, line int, class, severity, msg string) Finding {
-	seq := rec.Seq
-	return Finding{Index: index, Line: line, StreamID: rec.StreamID, Seq: &seq, Class: class, Severity: severity, Message: msg}
+func chainFinding(class, severity, msg string) Finding {
+	return Finding{Class: class, Severity: severity, Message: msg}
 }
 
-func checkChain(streams map[string]*streamState, rec *Record, index, line int) []Finding {
+// checkChain judges a positioned record against the state of its stream
+// (SPEC.md section 6.3, step 5). For a stream not seen before, the expected
+// predecessor is the genesis hash and the expected seq is 0.
+func checkChain(st *streamState, c RecordCheck) []Finding {
+	rec := c.Record
+	seq := c.seq.value
 	var fs []Finding
-	st := streams[rec.StreamID]
-	if st == nil {
-		st = &streamState{summary: StreamSummary{StreamID: rec.StreamID, FirstSeq: rec.Seq}}
-		streams[rec.StreamID] = st
-	}
-	switch {
-	case rec.ChainRestart:
-		msg := fmt.Sprintf("chain restart at seq %d, anchor %s", rec.Seq, rec.AnchorHash)
+	last := st.summary.LastChainHash
+	if c.restart {
+		msg := fmt.Sprintf("chain restart at seq %d, anchor %s", seq, rec.AnchorHash)
 		if !st.seen && rec.AnchorHash != GenesisHash {
 			msg += " (previous segment not in this journal)"
 		}
 		if st.seen && rec.AnchorHash == GenesisHash {
 			msg += " (anchor unknown: genesis)"
 		}
-		fs = append(fs, finding(rec, index, line, ClassRestart, SeverityNotice, msg))
+		fs = append(fs, chainFinding(ClassRestart, SeverityNotice, msg))
 		st.summary.Restarts++
-		if st.seen && rec.AnchorHash != GenesisHash && rec.AnchorHash != st.summary.LastChainHash {
-			fs = append(fs, finding(rec, index, line, ClassChainBreak, SeverityError,
-				fmt.Sprintf("anchor_hash %s does not match the last chain_hash %s of the previous segment", rec.AnchorHash, st.summary.LastChainHash)))
+		if st.seen && rec.AnchorHash != GenesisHash && rec.AnchorHash != last {
+			fs = append(fs, chainFinding(ClassChainBreak, SeverityError,
+				fmt.Sprintf("anchor_hash %s does not match the last chain_hash %s of the previous segment", rec.AnchorHash, last)))
+		} else if st.seen && st.lastUnknown && rec.AnchorHash == last {
+			fs = append(fs, chainFinding(ClassAfterUnknown, SeverityNotice, afterUnknownMessage))
 		}
-	case !st.seen:
-		if rec.PrevHash != GenesisHash {
-			fs = append(fs, finding(rec, index, line, ClassChainBreak, SeverityError,
-				fmt.Sprintf("first record of stream has prev_hash %s instead of genesis and is not marked chain_restart", rec.PrevHash)))
-		} else if rec.Seq != 0 {
-			fs = append(fs, finding(rec, index, line, ClassSeqGap, SeverityError,
-				fmt.Sprintf("first record of stream has seq %d, expected 0", rec.Seq)))
+	} else {
+		expectPrev := GenesisHash
+		if st.seen {
+			expectPrev = last
 		}
-	default:
-		if rec.PrevHash != st.summary.LastChainHash {
-			fs = append(fs, finding(rec, index, line, ClassChainBreak, SeverityError,
-				fmt.Sprintf("prev_hash %s does not match previous chain_hash %s", rec.PrevHash, st.summary.LastChainHash)))
+		linked := rec.PrevHash == expectPrev
+		// pos compares seq with the expected seq without overflow:
+		// -1 behind (repeated or backwards), 0 next, +1 ahead.
+		pos := 0
+		switch {
+		case !st.seen && seq > 0:
+			pos = 1
+		case st.seen && seq <= st.summary.LastSeq:
+			pos = -1
+		case st.seen && seq-st.summary.LastSeq > 1:
+			pos = 1
 		}
-		if rec.Seq != st.summary.LastSeq+1 {
-			fs = append(fs, finding(rec, index, line, ClassSeqGap, SeverityError,
-				fmt.Sprintf("seq %d, expected %d", rec.Seq, st.summary.LastSeq+1)))
+		switch {
+		case linked && pos == 0:
+			if st.seen && st.lastUnknown {
+				fs = append(fs, chainFinding(ClassAfterUnknown, SeverityNotice, afterUnknownMessage))
+			}
+		case linked && pos > 0 && !st.seen:
+			fs = append(fs, chainFinding(ClassSeqMismatch, SeverityError,
+				fmt.Sprintf("first record of stream links to genesis but has seq %d, expected 0", seq)))
+		case linked && pos > 0:
+			fs = append(fs, chainFinding(ClassSeqMismatch, SeverityError,
+				fmt.Sprintf("seq %d, expected %d: prev_hash links to the record with seq %d, so no record can be missing in between", seq, st.summary.LastSeq+1, st.summary.LastSeq)))
+		case linked:
+			fs = append(fs, chainFinding(ClassSeqMismatch, SeverityError, seqBehindMessage(seq, st.summary.LastSeq)))
+		case pos == 0 && !st.seen:
+			fs = append(fs, chainFinding(ClassChainBreak, SeverityError,
+				fmt.Sprintf("first record of stream has seq 0 but prev_hash %s instead of genesis and is not marked chain_restart", rec.PrevHash)))
+		case pos == 0:
+			fs = append(fs, chainFinding(ClassChainBreak, SeverityError,
+				fmt.Sprintf("prev_hash %s does not match previous chain_hash %s", rec.PrevHash, last)))
+		case pos > 0 && !st.seen:
+			fs = append(fs, chainFinding(ClassSeqGap, SeverityNotice,
+				fmt.Sprintf("first record of stream has seq %d and prev_hash %s: its predecessor is not in this journal", seq, rec.PrevHash)))
+		case pos > 0:
+			fs = append(fs, chainFinding(ClassSeqGap, SeverityNotice,
+				fmt.Sprintf("seq %d after seq %d, and prev_hash %s does not link to the last checked record: its predecessor is not in this journal", seq, st.summary.LastSeq, rec.PrevHash)))
+		default:
+			fs = append(fs,
+				chainFinding(ClassChainBreak, SeverityError,
+					fmt.Sprintf("prev_hash %s does not match previous chain_hash %s", rec.PrevHash, last)),
+				chainFinding(ClassSeqMismatch, SeverityError, seqBehindMessage(seq, st.summary.LastSeq)))
 		}
 	}
 	st.seen = true
 	st.summary.Records++
-	st.summary.LastSeq = rec.Seq
+	st.summary.LastSeq = seq
 	st.summary.LastChainHash = rec.ChainHash
 	return fs
 }
 
-func checkSignature(opts Options, rec *Record, index, line int, rep *Report) []Finding {
+const afterUnknownMessage = "links to a record in state unknown; this record is valid relative to that record, not to the start of the stream"
+
+func seqBehindMessage(seq, last uint64) string {
+	if seq == last {
+		return fmt.Sprintf("seq %d repeats the seq of the previous record", seq)
+	}
+	return fmt.Sprintf("seq %d goes backwards (previous seq %d)", seq, last)
+}
+
+func checkSignature(opts Options, rec *Record, rep *Report) []Finding {
 	if rec.Signature == nil {
 		if opts.PublicKey != nil {
 			rep.UnsignedRecords++
 			if opts.RequireSignatures {
-				return []Finding{finding(rec, index, line, ClassSignatureInvalid, SeverityError, "record is not signed")}
+				return []Finding{{Class: ClassSignatureInvalid, Severity: SeverityError, Message: "record is not signed"}}
 			}
 		}
 		return nil
@@ -318,7 +563,7 @@ func checkSignature(opts Options, rec *Record, index, line int, rep *Report) []F
 		return nil
 	}
 	if err := VerifySignature(opts.PublicKey, rec.ChainHash, rec.Signature); err != nil {
-		return []Finding{finding(rec, index, line, ClassSignatureInvalid, SeverityError, err.Error())}
+		return []Finding{{Class: ClassSignatureInvalid, Severity: SeverityError, Message: err.Error()}}
 	}
 	rep.SignaturesVerified++
 	return nil

@@ -1,9 +1,9 @@
 {
-  "note": "Manipulated copies of examples/transfer-worker.jsonl, one per error class, and the verdict a verifier must reach. Same format as testdata/streams/expected.json: findings lists the distinct (index, class) pairs in order of first occurrence; pubkey paths are relative to this file.",
+  "note": "Manipulated copies of examples/transfer-worker.jsonl and the verdict a verifier must reach. Same format as testdata/streams/expected.json: findings lists the distinct (index, class) pairs in order of first occurrence, states and profile_states the expected state of every record; pubkey paths are relative to this file.",
   "cases": [
     {
       "file": "hash-mismatch.jsonl",
-      "description": "Record 2, a failed job, was edited in the file to read status ok. Its content_hash and chain_hash were left alone, so both no longer match: hash_mismatch on record 2. Record 3 still links to the declared chain_hash, so the chain itself is not reported as broken.",
+      "description": "Record 2, a failed job, was edited in the file to read status ok. Its content_hash and chain_hash were left alone, so both no longer match: hash_mismatch on record 2, invalid. Record 3 still links to the declared chain_hash, so it is valid.",
       "ok": false,
       "records": 4,
       "restarts": 0,
@@ -12,11 +12,23 @@
           "index": 2,
           "class": "hash_mismatch"
         }
+      ],
+      "states": [
+        "valid",
+        "valid",
+        "invalid",
+        "valid"
+      ],
+      "profile_states": [
+        "none",
+        "none",
+        "none",
+        "none"
       ]
     },
     {
       "file": "chain-break.jsonl",
-      "description": "Record 2 was edited the same way and then re-sealed: its hashes are recomputed and consistent. Record 3 still carries the prev_hash of the original record 2, so the link from 3 to 2 fails: chain_break on record 3.",
+      "description": "Record 2 was edited the same way and then re-sealed: its hashes are recomputed and consistent, so it is valid on its own. Record 3 still carries the prev_hash of the original record 2, so the link from 3 to 2 fails: chain_break on record 3, invalid.",
       "ok": false,
       "records": 4,
       "restarts": 0,
@@ -25,19 +37,41 @@
           "index": 3,
           "class": "chain_break"
         }
+      ],
+      "states": [
+        "valid",
+        "valid",
+        "valid",
+        "invalid"
+      ],
+      "profile_states": [
+        "none",
+        "none",
+        "none",
+        "none"
       ]
     },
     {
-      "file": "seq-gap.jsonl",
-      "description": "Record 2, the failed job, was deleted and record 3 re-sealed so that it links to record 1. Every hash and link checks out, but seq jumps from 1 to 3: seq_gap on the record that is now at index 2.",
+      "file": "seq-mismatch.jsonl",
+      "description": "Record 2, the failed job, was deleted and record 3 re-sealed so that it links to record 1. Every hash and link checks out, but the record that links to seq 1 has seq 3: seq_mismatch on the record that is now at index 2, invalid.",
       "ok": false,
       "records": 3,
       "restarts": 0,
       "findings": [
         {
           "index": 2,
-          "class": "seq_gap"
+          "class": "seq_mismatch"
         }
+      ],
+      "states": [
+        "valid",
+        "valid",
+        "invalid"
+      ],
+      "profile_states": [
+        "none",
+        "none",
+        "none"
       ]
     },
     {
@@ -57,6 +91,124 @@
           "index": 3,
           "class": "signature_invalid"
         }
+      ],
+      "states": [
+        "valid",
+        "valid",
+        "invalid",
+        "invalid"
+      ],
+      "profile_states": [
+        "none",
+        "none",
+        "none",
+        "none"
+      ]
+    },
+    {
+      "file": "seq-gap.jsonl",
+      "description": "Record 2, the failed job, was deleted and nothing else changed. Record 3 links to the deleted record, which the journal does not have: seq_gap, state unknown. No record is provably invalid, so verification without --strict passes and reports one unknown record.",
+      "ok": true,
+      "records": 3,
+      "restarts": 0,
+      "findings": [
+        {
+          "index": 2,
+          "class": "seq_gap"
+        }
+      ],
+      "states": [
+        "valid",
+        "valid",
+        "unknown"
+      ],
+      "profile_states": [
+        "none",
+        "none",
+        "none"
+      ]
+    },
+    {
+      "file": "seq-gap.jsonl",
+      "description": "The same journal with strict verification: the unknown record fails it.",
+      "strict": true,
+      "ok": false,
+      "records": 3,
+      "restarts": 0,
+      "findings": [
+        {
+          "index": 2,
+          "class": "seq_gap"
+        }
+      ],
+      "states": [
+        "valid",
+        "valid",
+        "unknown"
+      ],
+      "profile_states": [
+        "none",
+        "none",
+        "none"
+      ]
+    },
+    {
+      "file": "outside-scope.jsonl",
+      "description": "Record 2 was edited and its schema changed to trail.evidence/2, so that a verifier for trail.evidence/1 does not check it: outside_scope. Record 3 still links to the original record 2, which the chain therefore does not have: seq_gap, unknown. Without --strict the journal passes with one record outside the scope and one unknown.",
+      "ok": true,
+      "records": 4,
+      "restarts": 0,
+      "findings": [
+        {
+          "index": 2,
+          "class": "outside_scope"
+        },
+        {
+          "index": 3,
+          "class": "seq_gap"
+        }
+      ],
+      "states": [
+        "valid",
+        "valid",
+        "outside_scope",
+        "unknown"
+      ],
+      "profile_states": [
+        "none",
+        "none",
+        "none",
+        "none"
+      ]
+    },
+    {
+      "file": "outside-scope.jsonl",
+      "description": "The same journal with strict verification: it fails on both records.",
+      "strict": true,
+      "ok": false,
+      "records": 4,
+      "restarts": 0,
+      "findings": [
+        {
+          "index": 2,
+          "class": "outside_scope"
+        },
+        {
+          "index": 3,
+          "class": "seq_gap"
+        }
+      ],
+      "states": [
+        "valid",
+        "valid",
+        "outside_scope",
+        "unknown"
+      ],
+      "profile_states": [
+        "none",
+        "none",
+        "none",
+        "none"
       ]
     }
   ]

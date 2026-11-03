@@ -35,6 +35,10 @@ type Vector struct {
 	ExpectedValid       bool            `json:"expected_valid"`
 	ExpectedError       string          `json:"expected_error,omitempty"`
 	ExpectedNotices     []string        `json:"expected_notices,omitempty"`
+	// ExpectedState is the state of the record on its own (valid, invalid
+	// or outside_scope); unknown needs a stream and never appears here.
+	ExpectedState        string `json:"expected_state"`
+	ExpectedProfileState string `json:"expected_profile_state"`
 }
 
 // File is the shape of testdata/vectors.json.
@@ -63,16 +67,22 @@ type ExpectedFinding struct {
 	Class string `json:"class"`
 }
 
-// StreamCase describes one fixture under testdata/streams.
+// StreamCase describes one fixture under testdata/streams. States and
+// ProfileStates list the expected state and profile state of every record,
+// by index. A file may appear in several cases, for example once without
+// and once with Strict.
 type StreamCase struct {
 	File              string            `json:"file"`
 	Description       string            `json:"description"`
 	PublicKey         string            `json:"pubkey,omitempty"`
 	RequireSignatures bool              `json:"require_signatures,omitempty"`
+	Strict            bool              `json:"strict,omitempty"`
 	OK                bool              `json:"ok"`
 	Records           int               `json:"records"`
 	Restarts          int               `json:"restarts"`
 	Findings          []ExpectedFinding `json:"findings"`
+	States            []string          `json:"states"`
+	ProfileStates     []string          `json:"profile_states"`
 	Lines             []string          `json:"-"`
 }
 
@@ -88,8 +98,11 @@ type Output struct {
 	Streams  []StreamCase
 	Examples []Journal
 	// Tampered are manipulated copies of examples/transfer-worker.jsonl,
-	// one per error class, written to examples/tampered/.
+	// written to examples/tampered/.
 	Tampered []StreamCase
+	// ProfileJournals are the journals of the profile registry, written to
+	// profiles/<name>/<major>.journal.jsonl.
+	ProfileJournals []Journal
 }
 
 func mustKey() ed25519.PrivateKey {
@@ -134,34 +147,113 @@ func encode(r *evidence.Record) string {
 
 func vector(name, desc string, r *evidence.Record) Vector {
 	raw := encode(r)
-	return finishVector(name, desc, raw, true, "")
+	return finishVector(name, desc, raw, true, "", evidence.ProfileNone)
 }
 
-func finishVector(name, desc, raw string, valid bool, class string) Vector {
+// finishVector computes the expected hashes of raw with the reference
+// implementation. The intended verdict (valid, error class, profile state) is
+// given by the caller and checked against the implementation, so that a
+// generator run fails instead of recording a wrong expectation.
+func finishVector(name, desc, raw string, valid bool, class, profileState string) Vector {
 	h, err := evidence.ComputeHashes([]byte(raw))
 	if err != nil {
 		panic(err)
 	}
+	c := evidence.CheckRecord([]byte(raw))
 	var notices []string
-	if _, findings := evidence.VerifyRecord([]byte(raw)); findings != nil {
-		for _, f := range findings {
-			if f.Severity == evidence.SeverityNotice {
-				notices = append(notices, f.Class)
-			}
+	hasClass := false
+	for _, f := range c.Findings {
+		if f.Severity == evidence.SeverityNotice {
+			notices = append(notices, f.Class)
+		}
+		if f.Class == class {
+			hasClass = true
 		}
 	}
-	return Vector{
-		ExpectedNotices:     notices,
-		Name:                name,
-		Description:         desc,
-		Record:              json.RawMessage(raw),
-		ExpectedPayloadJCS:  string(h.PayloadJCS),
-		ExpectedContentHash: h.ContentHash,
-		ExpectedCoreJCS:     string(h.CoreJCS),
-		ExpectedChainHash:   h.ChainHash,
-		ExpectedValid:       valid,
-		ExpectedError:       class,
+	state := evidence.StateValid
+	if !valid {
+		state = evidence.StateInvalid
 	}
+	if c.State != state || c.ProfileState != profileState || (!valid && !hasClass) {
+		panic(fmt.Sprintf("vector %s: implementation says state %s, profile state %s, findings %+v; intended %s, %s, %s",
+			name, c.State, c.ProfileState, c.Findings, state, profileState, class))
+	}
+	return Vector{
+		ExpectedNotices:      notices,
+		Name:                 name,
+		Description:          desc,
+		Record:               json.RawMessage(raw),
+		ExpectedPayloadJCS:   string(h.PayloadJCS),
+		ExpectedContentHash:  h.ContentHash,
+		ExpectedCoreJCS:      string(h.CoreJCS),
+		ExpectedChainHash:    h.ChainHash,
+		ExpectedValid:        valid,
+		ExpectedError:        class,
+		ExpectedState:        state,
+		ExpectedProfileState: profileState,
+	}
+}
+
+// resealRaw applies edit to the encoded record and recomputes content_hash
+// and chain_hash over the edited bytes, as a producer that writes that form
+// would have. It returns the line and its chain_hash.
+func resealRaw(r *evidence.Record, edit func(string) string) (string, string) {
+	raw := encode(r)
+	edited := edit(raw)
+	if edited == raw {
+		panic("resealRaw: the edit changed nothing")
+	}
+	h, err := evidence.ComputeHashes([]byte(edited))
+	if err != nil {
+		panic(err)
+	}
+	out := strings.Replace(edited, `"content_hash":"`+r.ContentHash+`"`, `"content_hash":"`+h.ContentHash+`"`, 1)
+	out = strings.Replace(out, `"chain_hash":"`+r.ChainHash+`"`, `"chain_hash":"`+h.ChainHash+`"`, 1)
+	return out, h.ChainHash
+}
+
+// replaceOnce replaces exactly one occurrence of from and panics otherwise.
+func replaceOnce(s, from, to string) string {
+	if strings.Count(s, from) != 1 {
+		panic(fmt.Sprintf("replaceOnce: %q occurs %d times", from, strings.Count(s, from)))
+	}
+	return strings.Replace(s, from, to, 1)
+}
+
+// seqMember is the seq member of a sealed record as the encoder writes it.
+func seqMember(r *evidence.Record) string {
+	return fmt.Sprintf(`"seq":"%d"`, r.Seq)
+}
+
+// states expands a compact state list: v valid, i invalid, u unknown,
+// o outside_scope.
+func states(s string) []string {
+	m := map[rune]string{'v': evidence.StateValid, 'i': evidence.StateInvalid, 'u': evidence.StateUnknown, 'o': evidence.StateOutsideScope}
+	return expand(s, m)
+}
+
+// profileStates expands a compact profile state list: n none, v valid,
+// i invalid, o outside_scope.
+func profileStates(s string) []string {
+	m := map[rune]string{'n': evidence.ProfileNone, 'v': evidence.StateValid, 'i': evidence.StateInvalid, 'o': evidence.StateOutsideScope}
+	return expand(s, m)
+}
+
+func expand(s string, m map[rune]string) []string {
+	out := make([]string, 0, len(s))
+	for _, c := range s {
+		v, ok := m[c]
+		if !ok {
+			panic(fmt.Sprintf("unknown state letter %q", c))
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// none returns n profile states "none".
+func none(n int) []string {
+	return profileStates(strings.Repeat("n", n))
 }
 
 // Build returns the complete, deterministic generator output.
@@ -263,7 +355,7 @@ func Build() Output {
 	}
 	out.Vectors.Vectors = append(out.Vectors.Vectors, finishVector("invalid-chain-hash",
 		"second-chained with the last hex digit of chain_hash changed. A verifier must report hash_mismatch; expected_chain_hash is the correct value.",
-		tampered, false, evidence.ClassHashMismatch))
+		tampered, false, evidence.ClassHashMismatch, evidence.ProfileNone))
 
 	// Vector 10: payload tampered after sealing.
 	bad = encode(&v6)
@@ -273,12 +365,116 @@ func Build() Output {
 	}
 	out.Vectors.Vectors = append(out.Vectors.Vectors, finishVector("invalid-content-hash",
 		"redaction with the payload altered after sealing. content_hash no longer matches, and because the core carries the recomputed content_hash, chain_hash differs as well. A verifier must report hash_mismatch.",
-		tampered, false, evidence.ClassHashMismatch))
+		tampered, false, evidence.ClassHashMismatch, evidence.ProfileNone))
+
+	out.Vectors.Vectors = append(out.Vectors.Vectors, buildSeqVectors()...)
+	out.Vectors.Vectors = append(out.Vectors.Vectors, buildProfileVectors()...)
 
 	out.Streams = buildStreams(priv)
 	out.Examples = buildExamples()
 	out.Tampered = buildTampered(priv)
+	out.ProfileJournals = buildProfileJournals()
 	return out
+}
+
+// measurement is a payload of the test profile example.measurement/1.
+func measurement(value string) string {
+	return `{"quantity":"temperature","value":"` + value + `","unit":"degC","samples":16,"sensor":{"id":"pt100-line1","calibrated":true}}`
+}
+
+func buildSeqVectors() []Vector {
+	var out []Vector
+	big := base(evidence.ProducerOther, "ref-producer", "seq", 9007199254740993, "test.seq.decimal",
+		"2026-11-02T14:00:00.000Z", `{"n":"2^53+1"}`)
+	seal(&big, evidence.GenesisHash)
+	out = append(out, vector("seq-beyond-2-53",
+		"seq is a JSON string in canonical decimal form. 9007199254740993 (2^53 + 1) is hashed exactly as written; as a JSON number JCS would round it to 9007199254740992. Verifiers compare seq values as integers of arbitrary size, never as doubles.", &big))
+
+	top := base(evidence.ProducerOther, "ref-producer", "seq", evidence.MaxSeq, "test.seq.decimal",
+		"2026-11-02T14:00:01.000Z", `{"n":"uint64 max"}`)
+	seal(&top, evidence.GenesisHash)
+	out = append(out, vector("seq-uint64-max",
+		"seq at its largest allowed value, 18446744073709551615 (2^64 - 1).", &top))
+
+	legacy := base(evidence.ProducerOther, "ref-producer", "seq", 7, "test.seq.legacy",
+		"2026-11-02T14:00:02.000Z", `{"n":7}`)
+	seal(&legacy, evidence.GenesisHash)
+	raw, _ := resealRaw(&legacy, func(s string) string { return replaceOnce(s, `"seq":"7"`, `"seq":7`) })
+	out = append(out, finishVector("seq-legacy-integer",
+		"seq written as a JSON number, the form of format 0.1. Accepted during 0.x with the notice legacy_integer_seq; schema_invalid from 1.0. The hashes cover the member as written, so the core carries \"seq\":7, and 0.1 journals keep verifying.",
+		raw, true, "", evidence.ProfileNone))
+
+	missing := base(evidence.ProducerOther, "ref-producer", "seq", 1, "test.seq.missing",
+		"2026-11-02T14:00:03.000Z", `{"n":1}`)
+	seal(&missing, evidence.GenesisHash)
+	raw, _ = resealRaw(&missing, func(s string) string { return replaceOnce(s, seqMember(&missing)+",", "") })
+	out = append(out, finishVector("seq-missing",
+		"No seq member. The hashes are computed over the record as written (a core without seq); the record is schema_invalid and, in a journal, takes no part in the chain checks.",
+		raw, false, evidence.ClassSchemaInvalid, evidence.ProfileNone))
+
+	for _, bad := range []struct{ name, value, desc string }{
+		{"seq-leading-zero", `"07"`, "seq \"07\" has a leading zero; the canonical form is \"7\". schema_invalid."},
+		{"seq-out-of-range", `"18446744073709551616"`, "seq \"18446744073709551616\" is 2^64, one more than the largest allowed value. schema_invalid."},
+	} {
+		r := base(evidence.ProducerOther, "ref-producer", "seq", 7, "test.seq.malformed",
+			"2026-11-02T14:00:04.000Z", `{"n":7}`)
+		seal(&r, evidence.GenesisHash)
+		raw, _ := resealRaw(&r, func(s string) string { return replaceOnce(s, seqMember(&r), `"seq":`+bad.value) })
+		out = append(out, finishVector(bad.name, bad.desc, raw, false, evidence.ClassSchemaInvalid, evidence.ProfileNone))
+	}
+	return out
+}
+
+func buildProfileVectors() []Vector {
+	var out []Vector
+	pr := func(profile, payload string) evidence.Record {
+		r := base(evidence.ProducerOther, "ref-producer", "profiles", 0, "test.measurement.recorded",
+			"2026-11-02T15:00:00.000Z", payload)
+		r.Profile = profile
+		seal(&r, evidence.GenesisHash)
+		return r
+	}
+	ok := pr("example.measurement/1", measurement("21.5"))
+	out = append(out, finishVector("profile-valid",
+		"Record with profile example.measurement/1 and a payload that satisfies the profile schema. profile is part of the core.",
+		encode(&ok), true, "", evidence.StateValid))
+
+	bad := pr("example.measurement/1", `{"quantity":"temperature","value":21.5}`)
+	out = append(out, finishVector("profile-payload-invalid",
+		"Known profile, payload violates it: unit is missing and value is a number. The hashes are correct; profile_invalid makes the record invalid.",
+		encode(&bad), false, evidence.ClassProfileInvalid, evidence.StateInvalid))
+
+	major := pr("example.measurement/2", measurement("21.5"))
+	out = append(out, finishVector("profile-major-unknown",
+		"Profile name known, major version 2 not in the registry. The core checks pass, so the record is valid; its profile state is outside_scope with the notice profile_unknown.",
+		encode(&major), true, "", evidence.StateOutsideScope))
+
+	name := pr("acme.unknown/1", `{"anything":"goes"}`)
+	out = append(out, finishVector("profile-name-unknown",
+		"Profile name not in the registry. Valid record, profile state outside_scope, notice profile_unknown.",
+		encode(&name), true, "", evidence.StateOutsideScope))
+
+	malformed := pr("Example.Measurement/1", measurement("21.5"))
+	out = append(out, finishVector("profile-malformed",
+		"profile does not match <name>/<major> (upper-case letters). schema_invalid; profile state invalid.",
+		encode(&malformed), false, evidence.ClassSchemaInvalid, evidence.StateInvalid))
+	return out
+}
+
+// buildProfileJournals returns the journal of each profile in the registry:
+// records sealed by the producer (here the reference implementation) that
+// every verifier must find valid, with profile state valid.
+func buildProfileJournals() []Journal {
+	recs := []*evidence.Record{}
+	for i, v := range []string{"21.5", "21.6", "21.4"} {
+		r := base(evidence.ProducerOther, "lab-sensor-01", "lab-sensor-01", uint64(i), "test.measurement.recorded",
+			fmt.Sprintf("2026-11-02T16:00:%02d.000Z", i), measurement(v))
+		r.Profile = "example.measurement/1"
+		r.Time.Source = evidence.TimeSourceNTP
+		recs = append(recs, &r)
+	}
+	sealChain(recs)
+	return []Journal{{File: "example.measurement/1.journal.jsonl", Lines: lines(recs...)}}
 }
 
 func flipLast(h string) string {
@@ -315,21 +511,48 @@ func buildStreams(priv ed25519.PrivateKey) []StreamCase {
 
 	valid := chain(evidence.ProducerOther, "p", "s", ev, `{"n":0}`, `{"n":1}`, `{"n":2}`)
 	cases = append(cases, StreamCase{File: "valid-chain.jsonl", Description: "Three correctly chained records.",
-		OK: true, Records: 3, Findings: []ExpectedFinding{}, Lines: lines(valid...)})
+		OK: true, Records: 3, Findings: []ExpectedFinding{}, States: states("vvv"), ProfileStates: none(3), Lines: lines(valid...)})
+	cases = append(cases, StreamCase{File: "valid-chain.jsonl", Description: "The same journal with strict verification: every record is valid, so it passes.", Strict: true,
+		OK: true, Records: 3, Findings: []ExpectedFinding{}, States: states("vvv"), ProfileStates: none(3), Lines: lines(valid...)})
 
-	// seq gap: third record sealed with seq 3 instead of 2.
-	gap := chain(evidence.ProducerOther, "p", "s", ev, `{"n":0}`, `{"n":1}`)
-	g3 := base(evidence.ProducerOther, "p", "s", 3, ev, "2026-11-02T13:00:02.000Z", `{"n":3}`)
-	seal(&g3, gap[1].ChainHash)
-	cases = append(cases, StreamCase{File: "seq-gap.jsonl", Description: "Third record skips seq 2 but is otherwise correctly linked.",
-		OK: false, Records: 3, Findings: []ExpectedFinding{{Index: 2, Class: evidence.ClassSeqGap}}, Lines: lines(gap[0], gap[1], &g3)})
+	// seq mismatch: third record sealed with seq 3 but linked to record 1.
+	mm := chain(evidence.ProducerOther, "p", "s", ev, `{"n":0}`, `{"n":1}`)
+	m3 := base(evidence.ProducerOther, "p", "s", 3, ev, "2026-11-02T13:00:02.000Z", `{"n":3}`)
+	seal(&m3, mm[1].ChainHash)
+	cases = append(cases, StreamCase{File: "seq-mismatch.jsonl", Description: "Third record has seq 3 but its prev_hash links to record 1 (seq 1). The link says nothing is missing, the seq says a record is: seq_mismatch, invalid. This is what deleting a record and re-sealing its successor looks like.",
+		OK: false, Records: 3, Findings: []ExpectedFinding{{Index: 2, Class: evidence.ClassSeqMismatch}}, States: states("vvi"), ProfileStates: none(3), Lines: lines(mm[0], mm[1], &m3)})
+
+	// seq gap: record 2 is not in the journal; record 3 links to it.
+	gp := chain(evidence.ProducerOther, "p", "s", ev, `{"n":0}`, `{"n":1}`, `{"n":2}`, `{"n":3}`, `{"n":4}`)
+	gapLines := lines(gp[0], gp[1], gp[3], gp[4])
+	gapFindings := []ExpectedFinding{{Index: 2, Class: evidence.ClassSeqGap}, {Index: 3, Class: evidence.ClassAfterUnknown}}
+	cases = append(cases, StreamCase{File: "seq-gap.jsonl", Description: "Record with seq 2 is missing from the journal; the record with seq 3 links to it. Its own hashes are correct but its predecessor cannot be checked: seq_gap, state unknown. The next record links correctly to it: valid, with the notice after_unknown. No record is invalid, so the journal verifies.",
+		OK: true, Records: 4, Findings: gapFindings, States: states("vvuv"), ProfileStates: none(4), Lines: gapLines})
+	cases = append(cases, StreamCase{File: "seq-gap.jsonl", Description: "The same journal with strict verification: the unknown record fails it (seq_gap is reported as an error).", Strict: true,
+		OK: false, Records: 4, Findings: gapFindings, States: states("vvuv"), ProfileStates: none(4), Lines: gapLines})
+
+	// journal start: an excerpt that begins in the middle of a stream, and a
+	// second stream that begins with an anchored restart.
+	full := chain(evidence.ProducerOther, "p", "s", ev, `{"n":0}`, `{"n":1}`, `{"n":2}`, `{"n":3}`, `{"n":4}`, `{"n":5}`, `{"n":6}`, `{"n":7}`)
+	tr := base(evidence.ProducerOther, "p", "t", 40, "test.chain.restarted", "2026-11-02T13:20:00.000Z", `{"reason":"process restarted"}`)
+	tr.ChainRestart = true
+	tr.AnchorHash = evidence.HashBytes([]byte("last chain_hash of an earlier segment"))
+	seal(&tr, tr.AnchorHash)
+	tn := base(evidence.ProducerOther, "p", "t", 41, ev, "2026-11-02T13:20:01.000Z", `{"n":41}`)
+	seal(&tn, tr.ChainHash)
+	startLines := lines(full[5], &tr, full[6], &tn, full[7])
+	startFindings := []ExpectedFinding{{Index: 0, Class: evidence.ClassSeqGap}, {Index: 1, Class: evidence.ClassRestart}, {Index: 2, Class: evidence.ClassAfterUnknown}}
+	cases = append(cases, StreamCase{File: "journal-start.jsonl", Description: "Excerpt of stream s that begins at seq 5: the first record is neither genesis nor a restart, so its predecessor is missing (seq_gap, unknown); the records after it are valid, the first with after_unknown. Stream t begins with a restart anchored at an earlier segment: valid with a restart notice.",
+		OK: true, Records: 5, Restarts: 1, Findings: startFindings, States: states("uvvvv"), ProfileStates: none(5), Lines: startLines})
+	cases = append(cases, StreamCase{File: "journal-start.jsonl", Description: "The same excerpt with strict verification: the unknown first record fails it.", Strict: true,
+		OK: false, Records: 5, Restarts: 1, Findings: startFindings, States: states("uvvvv"), ProfileStates: none(5), Lines: startLines})
 
 	// chain break: third record sealed against the wrong predecessor.
 	brk := chain(evidence.ProducerOther, "p", "s", ev, `{"n":0}`, `{"n":1}`)
 	b3 := base(evidence.ProducerOther, "p", "s", 2, ev, "2026-11-02T13:00:02.000Z", `{"n":2}`)
 	seal(&b3, brk[0].ChainHash)
-	cases = append(cases, StreamCase{File: "chain-break.jsonl", Description: "Third record links to record 0 instead of record 1: a record was removed or reordered.",
-		OK: false, Records: 3, Findings: []ExpectedFinding{{Index: 2, Class: evidence.ClassChainBreak}}, Lines: lines(brk[0], brk[1], &b3)})
+	cases = append(cases, StreamCase{File: "chain-break.jsonl", Description: "Third record has the next seq but links to record 0 instead of record 1: a record was replaced or reordered. chain_break, invalid.",
+		OK: false, Records: 3, Findings: []ExpectedFinding{{Index: 2, Class: evidence.ClassChainBreak}}, States: states("vvi"), ProfileStates: none(3), Lines: lines(brk[0], brk[1], &b3)})
 
 	// restart: new segment anchored at the previous one.
 	rs := chain(evidence.ProducerOther, "p", "s", ev, `{"n":0}`, `{"n":1}`)
@@ -340,7 +563,7 @@ func buildStreams(priv ed25519.PrivateKey) []StreamCase {
 	r1 := base(evidence.ProducerOther, "p", "s", 1, ev, "2026-11-02T13:10:01.000Z", `{"n":1}`)
 	seal(&r1, r0.ChainHash)
 	cases = append(cases, StreamCase{File: "restart.jsonl", Description: "A restart record anchored at the last chain_hash of the previous segment, followed by one chained record. Verifies OK with one restart notice.",
-		OK: true, Records: 4, Restarts: 1, Findings: []ExpectedFinding{{Index: 2, Class: evidence.ClassRestart}}, Lines: lines(rs[0], rs[1], &r0, &r1)})
+		OK: true, Records: 4, Restarts: 1, Findings: []ExpectedFinding{{Index: 2, Class: evidence.ClassRestart}}, States: states("vvvv"), ProfileStates: none(4), Lines: lines(rs[0], rs[1], &r0, &r1)})
 
 	// restart with genesis anchor (previous segment unknown).
 	ug := base(evidence.ProducerOther, "p", "s", 0, "test.chain.restarted", "2026-11-02T13:10:00.000Z", `{"reason":"storage lost"}`)
@@ -348,7 +571,7 @@ func buildStreams(priv ed25519.PrivateKey) []StreamCase {
 	ug.AnchorHash = evidence.GenesisHash
 	seal(&ug, evidence.GenesisHash)
 	cases = append(cases, StreamCase{File: "restart-unknown-anchor.jsonl", Description: "Previous segment present, restart anchored at genesis because the producer lost its state. Allowed, reported as a restart notice.",
-		OK: true, Records: 3, Restarts: 1, Findings: []ExpectedFinding{{Index: 2, Class: evidence.ClassRestart}}, Lines: lines(rs[0], rs[1], &ug)})
+		OK: true, Records: 3, Restarts: 1, Findings: []ExpectedFinding{{Index: 2, Class: evidence.ClassRestart}}, States: states("vvv"), ProfileStates: none(3), Lines: lines(rs[0], rs[1], &ug)})
 
 	// restart whose anchor does not match the previous segment.
 	ba := base(evidence.ProducerOther, "p", "s", 0, "test.chain.restarted", "2026-11-02T13:10:00.000Z", `{"reason":"restart"}`)
@@ -356,14 +579,14 @@ func buildStreams(priv ed25519.PrivateKey) []StreamCase {
 	ba.AnchorHash = rs[0].ChainHash
 	seal(&ba, rs[0].ChainHash)
 	cases = append(cases, StreamCase{File: "restart-bad-anchor.jsonl", Description: "Restart anchored at record 0 although record 1 is the last of the previous segment: restart notice plus chain_break.",
-		OK: false, Records: 3, Restarts: 1, Findings: []ExpectedFinding{{Index: 2, Class: evidence.ClassRestart}, {Index: 2, Class: evidence.ClassChainBreak}}, Lines: lines(rs[0], rs[1], &ba)})
+		OK: false, Records: 3, Restarts: 1, Findings: []ExpectedFinding{{Index: 2, Class: evidence.ClassRestart}, {Index: 2, Class: evidence.ClassChainBreak}}, States: states("vvi"), ProfileStates: none(3), Lines: lines(rs[0], rs[1], &ba)})
 
 	// tampered payload.
 	tp := chain(evidence.ProducerOther, "p", "s", ev, `{"n":0}`, `{"n":1}`, `{"n":2}`)
 	tl := lines(tp...)
 	tl[1] = strings.Replace(tl[1], `"payload":{"n":1}`, `"payload":{"n":100}`, 1)
-	cases = append(cases, StreamCase{File: "tampered-payload.jsonl", Description: "Payload of record 1 changed after sealing: hash_mismatch on record 1 (content and chain hash), while record 2 still links to the declared chain_hash.",
-		OK: false, Records: 3, Findings: []ExpectedFinding{{Index: 1, Class: evidence.ClassHashMismatch}}, Lines: tl})
+	cases = append(cases, StreamCase{File: "tampered-payload.jsonl", Description: "Payload of record 1 changed after sealing: hash_mismatch on record 1 (content and chain hash), while record 2 still links to the declared chain_hash and is valid.",
+		OK: false, Records: 3, Findings: []ExpectedFinding{{Index: 1, Class: evidence.ClassHashMismatch}}, States: states("viv"), ProfileStates: none(3), Lines: tl})
 
 	// signed chain.
 	sg := chain(evidence.ProducerOther, "p", "s", ev, `{"n":0}`, `{"n":1}`, `{"n":2}`)
@@ -373,7 +596,7 @@ func buildStreams(priv ed25519.PrivateKey) []StreamCase {
 		}
 	}
 	cases = append(cases, StreamCase{File: "signed.jsonl", Description: "Three records signed with the TEST KEY.", PublicKey: "../keys/test-ed25519.pub", RequireSignatures: true,
-		OK: true, Records: 3, Findings: []ExpectedFinding{}, Lines: lines(sg...)})
+		OK: true, Records: 3, Findings: []ExpectedFinding{}, States: states("vvv"), ProfileStates: none(3), Lines: lines(sg...)})
 
 	// one invalid signature (signed by another key), one unsigned.
 	other := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{0x42}, 32))
@@ -385,7 +608,7 @@ func buildStreams(priv ed25519.PrivateKey) []StreamCase {
 		panic(err)
 	}
 	cases = append(cases, StreamCase{File: "signature-invalid.jsonl", Description: "Record 1 is signed by a different key (claiming the test key id), record 2 is unsigned. With the test public key and --require-signatures both are signature_invalid.", PublicKey: "../keys/test-ed25519.pub", RequireSignatures: true,
-		OK: false, Records: 3, Findings: []ExpectedFinding{{Index: 1, Class: evidence.ClassSignatureInvalid}, {Index: 2, Class: evidence.ClassSignatureInvalid}}, Lines: lines(bs...)})
+		OK: false, Records: 3, Findings: []ExpectedFinding{{Index: 1, Class: evidence.ClassSignatureInvalid}, {Index: 2, Class: evidence.ClassSignatureInvalid}}, States: states("vii"), ProfileStates: none(3), Lines: lines(bs...)})
 
 	// schema problems.
 	sc := chain(evidence.ProducerOther, "p", "s", ev, `{"n":0}`)
@@ -396,15 +619,162 @@ func buildStreams(priv ed25519.PrivateKey) []StreamCase {
 	sl := lines(sc[0], &sc1, &sc2)
 	sl = append(sl, `this is not json`)
 	sl = append(sl, `{"schema":"trail.evidence/1","seq":"3"}`)
-	cases = append(cases, StreamCase{File: "schema-invalid.jsonl", Description: "Record 1 has an unknown producer.kind (schema_invalid, but hashes and links still check out), record 3 is not JSON, record 4 has a string seq and misses most members.",
-		OK: false, Records: 5, Findings: []ExpectedFinding{{Index: 1, Class: evidence.ClassSchemaInvalid}, {Index: 3, Class: evidence.ClassSchemaInvalid}, {Index: 4, Class: evidence.ClassSchemaInvalid}}, Lines: sl})
+	sl = append(sl, `{"stream":"s","note":"a JSON object without a schema member"}`)
+	cases = append(cases, StreamCase{File: "schema-invalid.jsonl", Description: "Record 1 has an unknown producer.kind (schema_invalid, but hashes and links still check out, so record 2 is valid), record 3 is not JSON, record 4 misses most members, record 5 is a JSON object without schema. Records without stream_id or a usable seq take no part in the chain checks.",
+		OK: false, Records: 6, Findings: []ExpectedFinding{{Index: 1, Class: evidence.ClassSchemaInvalid}, {Index: 3, Class: evidence.ClassSchemaInvalid}, {Index: 4, Class: evidence.ClassSchemaInvalid}, {Index: 5, Class: evidence.ClassSchemaInvalid}}, States: states("viviii"), ProfileStates: none(6), Lines: sl})
 
 	// two interleaved streams.
 	a := chain(evidence.ProducerOther, "p", "a", ev, `{"s":"a","n":0}`, `{"s":"a","n":1}`)
 	b := chain(evidence.ProducerOther, "p", "b", ev, `{"s":"b","n":0}`, `{"s":"b","n":1}`)
 	cases = append(cases, StreamCase{File: "multi-stream.jsonl", Description: "Two independent streams interleaved in one journal; each chain is verified on its own.",
-		OK: true, Records: 4, Findings: []ExpectedFinding{}, Lines: lines(a[0], b[0], a[1], b[1])})
+		OK: true, Records: 4, Findings: []ExpectedFinding{}, States: states("vvvv"), ProfileStates: none(4), Lines: lines(a[0], b[0], a[1], b[1])})
 
+	cases = append(cases, buildSeqStreams()...)
+	cases = append(cases, buildScopeStreams()...)
+	cases = append(cases, buildProfileStreams()...)
+	return cases
+}
+
+// restartAt seals a restart record anchored at genesis with the given seq,
+// followed by chained records with the next seqs.
+func restartAt(stream string, seq uint64, n int) []*evidence.Record {
+	r := base(evidence.ProducerOther, "p", stream, seq, "test.chain.restarted", "2026-11-02T13:30:00.000Z", `{"reason":"seq test"}`)
+	r.ChainRestart = true
+	r.AnchorHash = evidence.GenesisHash
+	seal(&r, evidence.GenesisHash)
+	out := []*evidence.Record{&r}
+	for i := 1; i < n; i++ {
+		next := base(evidence.ProducerOther, "p", stream, seq+uint64(i), "test.stream.step", fmt.Sprintf("2026-11-02T13:30:%02d.000Z", i), fmt.Sprintf(`{"n":%d}`, i))
+		seal(&next, out[i-1].ChainHash)
+		out = append(out, &next)
+	}
+	return out
+}
+
+func buildSeqStreams() []StreamCase {
+	var cases []StreamCase
+	ev := "test.stream.step"
+
+	big := restartAt("big", 9007199254740991, 3)
+	top := restartAt("max", evidence.MaxSeq-1, 2)
+	cases = append(cases, StreamCase{File: "seq-decimal.jsonl", Description: "Decimal seq strings beyond 2^53 and up to 2^64 - 1. Stream big counts 9007199254740991, ...992, ...993; stream max reaches 18446744073709551615. Each stream begins with a restart anchored at genesis. A verifier that compares seq as doubles reports a false seq_mismatch at ...993.",
+		OK: true, Records: 5, Restarts: 2, Findings: []ExpectedFinding{{Index: 0, Class: evidence.ClassRestart}, {Index: 3, Class: evidence.ClassRestart}},
+		States: states("vvvvv"), ProfileStates: none(5), Lines: lines(big[0], big[1], big[2], top[0], top[1])})
+
+	dup := restartAt("big", 9007199254740992, 2)
+	d2 := base(evidence.ProducerOther, "p", "big", 9007199254740993, ev, "2026-11-02T13:30:05.000Z", `{"n":"again"}`)
+	seal(&d2, dup[1].ChainHash)
+	wrap := restartAt("max", evidence.MaxSeq, 1)
+	w1 := base(evidence.ProducerOther, "p", "max", 0, ev, "2026-11-02T13:30:06.000Z", `{"n":"wrapped"}`)
+	seal(&w1, wrap[0].ChainHash)
+	cases = append(cases, StreamCase{File: "seq-decimal-mismatch.jsonl", Description: "Traps for seq arithmetic. Stream big repeats seq 9007199254740993 (as doubles both are 9007199254740992, which hides the repetition). Stream max follows 18446744073709551615 with seq 0 (uint64 arithmetic that wraps would expect 0). Both are seq_mismatch.",
+		OK: false, Records: 5, Restarts: 2, Findings: []ExpectedFinding{{Index: 0, Class: evidence.ClassRestart}, {Index: 2, Class: evidence.ClassSeqMismatch}, {Index: 3, Class: evidence.ClassRestart}, {Index: 4, Class: evidence.ClassSeqMismatch}},
+		States: states("vvivi"), ProfileStates: none(5), Lines: lines(dup[0], dup[1], &d2, wrap[0], &w1)})
+
+	// legacy integer seq, mixed with a decimal string.
+	lg := chain(evidence.ProducerOther, "p", "s", ev, `{"n":0}`, `{"n":1}`, `{"n":2}`)
+	l0, h0 := resealRaw(lg[0], func(s string) string { return replaceOnce(s, `"seq":"0"`, `"seq":0`) })
+	l1r := base(evidence.ProducerOther, "p", "s", 1, ev, "2026-11-02T13:00:01.000Z", `{"n":1}`)
+	seal(&l1r, h0)
+	l2r := base(evidence.ProducerOther, "p", "s", 2, ev, "2026-11-02T13:00:02.000Z", `{"n":2}`)
+	seal(&l2r, l1r.ChainHash)
+	l2, _ := resealRaw(&l2r, func(s string) string { return replaceOnce(s, `"seq":"2"`, `"seq":2`) })
+	cases = append(cases, StreamCase{File: "legacy-integer-seq.jsonl", Description: "Records 0 and 2 write seq as a JSON number (format 0.1), record 1 as a decimal string. All are compared as integers and verify; the number form is reported as legacy_integer_seq.",
+		OK: true, Records: 3, Findings: []ExpectedFinding{{Index: 0, Class: evidence.ClassLegacyIntegerSeq}, {Index: 2, Class: evidence.ClassLegacyIntegerSeq}},
+		States: states("vvv"), ProfileStates: none(3), Lines: []string{l0, encode(&l1r), l2}})
+
+	// missing seq.
+	ms := chain(evidence.ProducerOther, "p", "s", ev, `{"n":0}`, `{"n":1}`)
+	m2r := base(evidence.ProducerOther, "p", "s", 2, ev, "2026-11-02T13:00:02.000Z", `{"n":2}`)
+	seal(&m2r, ms[1].ChainHash)
+	m2, m2hash := resealRaw(&m2r, func(s string) string { return replaceOnce(s, `"seq":"2",`, "") })
+	m3r := base(evidence.ProducerOther, "p", "s", 3, ev, "2026-11-02T13:00:03.000Z", `{"n":3}`)
+	seal(&m3r, m2hash)
+	m4r := base(evidence.ProducerOther, "p", "s", 4, ev, "2026-11-02T13:00:04.000Z", `{"n":4}`)
+	seal(&m4r, m3r.ChainHash)
+	cases = append(cases, StreamCase{File: "seq-missing.jsonl", Description: "Record 2 has no seq: schema_invalid, invalid, and without a position it takes no part in the chain checks. Record 3 links to record 2, which the chain therefore does not have: seq_gap, unknown. Record 4 is valid with after_unknown.",
+		OK: false, Records: 5, Findings: []ExpectedFinding{{Index: 2, Class: evidence.ClassSchemaInvalid}, {Index: 3, Class: evidence.ClassSeqGap}, {Index: 4, Class: evidence.ClassAfterUnknown}},
+		States: states("vviuv"), ProfileStates: none(5), Lines: []string{encode(ms[0]), encode(ms[1]), m2, encode(&m3r), encode(&m4r)}})
+
+	// malformed seq values, each linked to record 0.
+	mf := chain(evidence.ProducerOther, "p", "s", ev, `{"n":0}`)
+	mfLines := []string{encode(mf[0])}
+	for i, v := range []string{`"01"`, `"18446744073709551616"`, `1.0`, `"-1"`} {
+		r := base(evidence.ProducerOther, "p", "s", 1, ev, fmt.Sprintf("2026-11-02T13:00:0%d.000Z", i+1), `{"n":1}`)
+		seal(&r, mf[0].ChainHash)
+		line, _ := resealRaw(&r, func(s string) string { return replaceOnce(s, `"seq":"1"`, `"seq":`+v) })
+		mfLines = append(mfLines, line)
+	}
+	good := base(evidence.ProducerOther, "p", "s", 1, ev, "2026-11-02T13:00:05.000Z", `{"n":1}`)
+	seal(&good, mf[0].ChainHash)
+	mfLines = append(mfLines, encode(&good))
+	cases = append(cases, StreamCase{File: "seq-malformed.jsonl", Description: "Records 1 to 4 carry seq \"01\", \"18446744073709551616\", 1.0 and \"-1\": schema_invalid each, and none of them changes the chain state. Record 5 has seq \"1\", links to record 0 and is valid.",
+		OK: false, Records: 6, Findings: []ExpectedFinding{{Index: 1, Class: evidence.ClassSchemaInvalid}, {Index: 2, Class: evidence.ClassSchemaInvalid}, {Index: 3, Class: evidence.ClassSchemaInvalid}, {Index: 4, Class: evidence.ClassSchemaInvalid}},
+		States: states("viiiiv"), ProfileStates: none(6), Lines: mfLines})
+	return cases
+}
+
+func buildScopeStreams() []StreamCase {
+	ev := "test.stream.step"
+	sc := chain(evidence.ProducerOther, "p", "s", ev, `{"n":0}`, `{"n":1}`)
+	foreign1 := `{"schema":"trail.evidence/2","stream_id":"s","seq":"1","payload":{"n":"from a future major version"}}`
+	foreign2 := `{"schema":"acme.audit/1","event":"login","user":"alice"}`
+	ol := []string{encode(sc[0]), foreign1, foreign2, encode(sc[1])}
+	of := []ExpectedFinding{{Index: 1, Class: evidence.ClassOutsideScope}, {Index: 2, Class: evidence.ClassOutsideScope}}
+	return []StreamCase{
+		{File: "outside-scope.jsonl", Description: "Records 1 and 2 name another major version (trail.evidence/2) and another format (acme.audit/1): outside_scope, not checked, no part in any chain. Record 3 is chained against the last checked record of its stream, record 0, and is valid.",
+			OK: true, Records: 4, Findings: of, States: states("voov"), ProfileStates: none(4), Lines: ol},
+		{File: "outside-scope.jsonl", Description: "The same journal with strict verification: the two records outside the scope fail it.", Strict: true,
+			OK: false, Records: 4, Findings: of, States: states("voov"), ProfileStates: none(4), Lines: ol},
+	}
+}
+
+func buildProfileStreams() []StreamCase {
+	var cases []StreamCase
+	ev := "test.measurement.recorded"
+	pchain := func(stream string, specs ...[2]string) []*evidence.Record {
+		var recs []*evidence.Record
+		for i, sp := range specs {
+			r := base(evidence.ProducerOther, "lab", stream, uint64(i), ev, fmt.Sprintf("2026-11-02T15:00:%02d.000Z", i), sp[1])
+			r.Profile = sp[0]
+			recs = append(recs, &r)
+		}
+		sealChain(recs)
+		return recs
+	}
+	const known = "example.measurement/1"
+
+	pv := pchain("m", [2]string{known, measurement("21.5")}, [2]string{known, measurement("21.6")}, [2]string{known, `{"quantity":"temperature","value":"21.7","unit":"degC","extra":"allowed"}`})
+	cases = append(cases, StreamCase{File: "profile-valid.jsonl", Description: "Three records with the profile example.measurement/1 whose payloads satisfy it (the third has an extra member, which profiles allow).",
+		OK: true, Records: 3, Findings: []ExpectedFinding{}, States: states("vvv"), ProfileStates: profileStates("vvv"), Lines: lines(pv...)})
+	cases = append(cases, StreamCase{File: "profile-valid.jsonl", Description: "The same journal with strict verification: every profile is known and satisfied.", Strict: true,
+		OK: true, Records: 3, Findings: []ExpectedFinding{}, States: states("vvv"), ProfileStates: profileStates("vvv"), Lines: lines(pv...)})
+
+	ps := pchain("m",
+		[2]string{known, measurement("21.5")},
+		[2]string{known, `{"quantity":"temperature","value":21.5}`},
+		[2]string{"example.measurement/2", measurement("21.5")},
+		[2]string{"acme.unknown/1", `{"anything":"goes"}`},
+		[2]string{"", `{"n":4}`},
+	)
+	cases = append(cases, StreamCase{File: "profile-states.jsonl", Description: "One record per profile state. 0: known profile, payload satisfies it (valid). 1: known profile, payload violates it (profile_invalid; record invalid). 2: known name, unknown major version 2 and 3: unknown name (profile_unknown; profile state outside_scope, record still valid by its core checks). 4: no profile (none).",
+		OK: false, Records: 5, Findings: []ExpectedFinding{{Index: 1, Class: evidence.ClassProfileInvalid}, {Index: 2, Class: evidence.ClassProfileUnknown}, {Index: 3, Class: evidence.ClassProfileUnknown}},
+		States: states("vivvv"), ProfileStates: profileStates("vioon"), Lines: lines(ps...)})
+
+	pu := pchain("m", [2]string{known, measurement("21.5")}, [2]string{"example.measurement/2", measurement("21.6")}, [2]string{"acme.unknown/1", `{"anything":"goes"}`})
+	puFindings := []ExpectedFinding{{Index: 1, Class: evidence.ClassProfileUnknown}, {Index: 2, Class: evidence.ClassProfileUnknown}}
+	cases = append(cases, StreamCase{File: "profile-unknown.jsonl", Description: "Records 1 and 2 use profiles this verifier does not know. Their core checks pass, so the journal verifies; the payloads were not checked against a profile (profile_unknown).",
+		OK: true, Records: 3, Findings: puFindings, States: states("vvv"), ProfileStates: profileStates("voo"), Lines: lines(pu...)})
+	cases = append(cases, StreamCase{File: "profile-unknown.jsonl", Description: "The same journal with strict verification: a profile that was not checked fails it.", Strict: true,
+		OK: false, Records: 3, Findings: puFindings, States: states("vvv"), ProfileStates: profileStates("voo"), Lines: lines(pu...)})
+
+	pt := pchain("m", [2]string{known, measurement("21.5")}, [2]string{known, measurement("21.6")}, [2]string{known, measurement("21.7")}, [2]string{known, measurement("21.8")})
+	ptl := lines(pt...)
+	ptl[1] = replaceOnce(ptl[1], `"value":"21.6"`, `"value":"25.0"`)
+	ptl[2] = replaceOnce(ptl[2], `"profile":"example.measurement/1"`, `"profile":"example.measurement/2"`)
+	cases = append(cases, StreamCase{File: "profile-tampered.jsonl", Description: "Record 1: the measured value was edited after sealing; the payload still satisfies the profile, the hashes do not (hash_mismatch, invalid, profile valid). Record 2: the profile member was changed to an unknown major version to avoid the profile check; profile is part of the core, so chain_hash no longer matches (hash_mismatch, invalid, profile_unknown). Record 3 links to the declared chain_hash and is valid.",
+		OK: false, Records: 4, Findings: []ExpectedFinding{{Index: 1, Class: evidence.ClassHashMismatch}, {Index: 2, Class: evidence.ClassHashMismatch}, {Index: 2, Class: evidence.ClassProfileUnknown}},
+		States: states("viiv"), ProfileStates: profileStates("vvov"), Lines: ptl})
 	return cases
 }
 
@@ -521,8 +891,9 @@ func forge(s string) string {
 	return out
 }
 
-// buildTampered derives one manipulated journal per error class from the
-// transfer-worker example. Each file triggers exactly one finding class.
+// buildTampered derives manipulated journals from the transfer-worker
+// example: one per error class, plus the two manipulations that do not
+// produce an error but leave a record unknown.
 func buildTampered(priv ed25519.PrivateKey) []StreamCase {
 	var cases []StreamCase
 
@@ -531,8 +902,8 @@ func buildTampered(priv ed25519.PrivateKey) []StreamCase {
 	hl := lines(t...)
 	hl[2] = forge(hl[2])
 	cases = append(cases, StreamCase{File: "hash-mismatch.jsonl",
-		Description: "Record 2, a failed job, was edited in the file to read status ok. Its content_hash and chain_hash were left alone, so both no longer match: hash_mismatch on record 2. Record 3 still links to the declared chain_hash, so the chain itself is not reported as broken.",
-		OK:          false, Records: 4, Findings: []ExpectedFinding{{Index: 2, Class: evidence.ClassHashMismatch}}, Lines: hl})
+		Description: "Record 2, a failed job, was edited in the file to read status ok. Its content_hash and chain_hash were left alone, so both no longer match: hash_mismatch on record 2, invalid. Record 3 still links to the declared chain_hash, so it is valid.",
+		OK:          false, Records: 4, Findings: []ExpectedFinding{{Index: 2, Class: evidence.ClassHashMismatch}}, States: states("vviv"), ProfileStates: none(4), Lines: hl})
 
 	// chain_break: record 2 edited and re-sealed; record 3 still links to the original.
 	t = transferWorker()
@@ -540,16 +911,16 @@ func buildTampered(priv ed25519.PrivateKey) []StreamCase {
 	forged.Payload = json.RawMessage(forge(string(t[2].Payload)))
 	seal(&forged, t[1].ChainHash)
 	cases = append(cases, StreamCase{File: "chain-break.jsonl",
-		Description: "Record 2 was edited the same way and then re-sealed: its hashes are recomputed and consistent. Record 3 still carries the prev_hash of the original record 2, so the link from 3 to 2 fails: chain_break on record 3.",
-		OK:          false, Records: 4, Findings: []ExpectedFinding{{Index: 3, Class: evidence.ClassChainBreak}}, Lines: lines(t[0], t[1], &forged, t[3])})
+		Description: "Record 2 was edited the same way and then re-sealed: its hashes are recomputed and consistent, so it is valid on its own. Record 3 still carries the prev_hash of the original record 2, so the link from 3 to 2 fails: chain_break on record 3, invalid.",
+		OK:          false, Records: 4, Findings: []ExpectedFinding{{Index: 3, Class: evidence.ClassChainBreak}}, States: states("vvvi"), ProfileStates: none(4), Lines: lines(t[0], t[1], &forged, t[3])})
 
-	// seq_gap: record 2 deleted, record 3 re-sealed to link to record 1.
+	// seq_mismatch: record 2 deleted, record 3 re-sealed to link to record 1.
 	t = transferWorker()
 	relinked := *t[3]
 	seal(&relinked, t[1].ChainHash)
-	cases = append(cases, StreamCase{File: "seq-gap.jsonl",
-		Description: "Record 2, the failed job, was deleted and record 3 re-sealed so that it links to record 1. Every hash and link checks out, but seq jumps from 1 to 3: seq_gap on the record that is now at index 2.",
-		OK:          false, Records: 3, Findings: []ExpectedFinding{{Index: 2, Class: evidence.ClassSeqGap}}, Lines: lines(t[0], t[1], &relinked)})
+	cases = append(cases, StreamCase{File: "seq-mismatch.jsonl",
+		Description: "Record 2, the failed job, was deleted and record 3 re-sealed so that it links to record 1. Every hash and link checks out, but the record that links to seq 1 has seq 3: seq_mismatch on the record that is now at index 2, invalid.",
+		OK:          false, Records: 3, Findings: []ExpectedFinding{{Index: 2, Class: evidence.ClassSeqMismatch}}, States: states("vvi"), ProfileStates: none(3), Lines: lines(t[0], t[1], &relinked)})
 
 	// signature_invalid: signed journal, record 2 edited, records 2 and 3
 	// re-sealed so the chain is intact, the original signatures kept.
@@ -569,7 +940,30 @@ func buildTampered(priv ed25519.PrivateKey) []StreamCase {
 	cases = append(cases, StreamCase{File: "signature-invalid.jsonl",
 		Description: "The journal was signed with the TEST KEY. Record 2 was edited and records 2 and 3 were re-sealed, so every hash, link and seq checks out and verification without a key passes. The signatures were copied from the originals and cover the old chain_hash values: with the test public key, signature_invalid on records 2 and 3.",
 		PublicKey:   "../../testdata/keys/test-ed25519.pub", RequireSignatures: true,
-		OK: false, Records: 4, Findings: []ExpectedFinding{{Index: 2, Class: evidence.ClassSignatureInvalid}, {Index: 3, Class: evidence.ClassSignatureInvalid}}, Lines: lines(t[0], t[1], &sForged, &sNext)})
+		OK: false, Records: 4, Findings: []ExpectedFinding{{Index: 2, Class: evidence.ClassSignatureInvalid}, {Index: 3, Class: evidence.ClassSignatureInvalid}}, States: states("vvii"), ProfileStates: none(4), Lines: lines(t[0], t[1], &sForged, &sNext)})
+
+	// seq_gap: record 2 deleted, nothing re-sealed.
+	t = transferWorker()
+	dl := lines(t[0], t[1], t[3])
+	df := []ExpectedFinding{{Index: 2, Class: evidence.ClassSeqGap}}
+	cases = append(cases, StreamCase{File: "seq-gap.jsonl",
+		Description: "Record 2, the failed job, was deleted and nothing else changed. Record 3 links to the deleted record, which the journal does not have: seq_gap, state unknown. No record is provably invalid, so verification without --strict passes and reports one unknown record.",
+		OK:          true, Records: 3, Findings: df, States: states("vvu"), ProfileStates: none(3), Lines: dl})
+	cases = append(cases, StreamCase{File: "seq-gap.jsonl", Strict: true,
+		Description: "The same journal with strict verification: the unknown record fails it.",
+		OK:          false, Records: 3, Findings: df, States: states("vvu"), ProfileStates: none(3), Lines: dl})
+
+	// outside_scope: record 2 edited and its schema changed to another major version.
+	t = transferWorker()
+	ol := lines(t...)
+	ol[2] = replaceOnce(forge(ol[2]), `"schema":"trail.evidence/1"`, `"schema":"trail.evidence/2"`)
+	of := []ExpectedFinding{{Index: 2, Class: evidence.ClassOutsideScope}, {Index: 3, Class: evidence.ClassSeqGap}}
+	cases = append(cases, StreamCase{File: "outside-scope.jsonl",
+		Description: "Record 2 was edited and its schema changed to trail.evidence/2, so that a verifier for trail.evidence/1 does not check it: outside_scope. Record 3 still links to the original record 2, which the chain therefore does not have: seq_gap, unknown. Without --strict the journal passes with one record outside the scope and one unknown.",
+		OK:          true, Records: 4, Findings: of, States: states("vvou"), ProfileStates: none(4), Lines: ol})
+	cases = append(cases, StreamCase{File: "outside-scope.jsonl", Strict: true,
+		Description: "The same journal with strict verification: it fails on both records.",
+		OK:          false, Records: 4, Findings: of, States: states("vvou"), ProfileStates: none(4), Lines: ol})
 
 	return cases
 }
@@ -603,12 +997,12 @@ type StreamIndex struct {
 
 // MarshalStreamIndex renders testdata/streams/expected.json.
 func MarshalStreamIndex(cases []StreamCase) []byte {
-	return marshalIndex("Each case names a JSON Lines fixture and the verdict a verifier must reach. findings lists the distinct (index, class) pairs in order of first occurrence; index counts non-empty lines from 0. pubkey paths are relative to this file.", cases)
+	return marshalIndex("Each case names a JSON Lines fixture, the options (pubkey, require_signatures, strict) and the verdict a verifier must reach. findings lists the distinct (index, class) pairs in order of first occurrence; states and profile_states list the expected state and profile state of every record; index counts non-empty lines from 0. pubkey paths are relative to this file. A file may appear in several cases with different options.", cases)
 }
 
 // MarshalTamperedIndex renders examples/tampered/expected.json.
 func MarshalTamperedIndex(cases []StreamCase) []byte {
-	return marshalIndex("Manipulated copies of examples/transfer-worker.jsonl, one per error class, and the verdict a verifier must reach. Same format as testdata/streams/expected.json: findings lists the distinct (index, class) pairs in order of first occurrence; pubkey paths are relative to this file.", cases)
+	return marshalIndex("Manipulated copies of examples/transfer-worker.jsonl and the verdict a verifier must reach. Same format as testdata/streams/expected.json: findings lists the distinct (index, class) pairs in order of first occurrence, states and profile_states the expected state of every record; pubkey paths are relative to this file.", cases)
 }
 
 func marshalIndex(note string, cases []StreamCase) []byte {
@@ -643,6 +1037,13 @@ func Files(out Output) map[string][]byte {
 	files["examples/tampered/expected.json"] = MarshalTamperedIndex(out.Tampered)
 	for _, c := range out.Tampered {
 		files["examples/tampered/"+c.File] = []byte(strings.Join(c.Lines, "\n") + "\n")
+	}
+	// The browser verifier ships copies of two journals next to the page.
+	for _, copied := range []string{"examples/transfer-worker.jsonl", "examples/tampered/hash-mismatch.jsonl"} {
+		files["web/"+copied] = files[copied]
+	}
+	for _, j := range out.ProfileJournals {
+		files["profiles/"+j.File] = []byte(strings.Join(j.Lines, "\n") + "\n")
 	}
 	return files
 }

@@ -1,8 +1,9 @@
 // Command trail-evidence verifies Trail Evidence journals, recomputes the
 // hashes of a single record and prints the reference test vectors.
 //
-//	trail-evidence verify <file.jsonl|-> [--pubkey <hex|file>] [--require-signatures] [--json]
+//	trail-evidence verify <file.jsonl|-> [--pubkey <hex|file>] [--require-signatures] [--strict] [--json]
 //	trail-evidence hash <record.json|->
+//	trail-evidence profiles
 //	trail-evidence vectors
 //
 // Exit codes: 0 verification passed, 1 verification failed, 2 usage or I/O
@@ -21,19 +22,23 @@ import (
 	"github.com/RainerGewalt/trail-evidence/go/internal/vectors"
 )
 
-// version is set by the release build (-ldflags "-X main.version=..."). A
-// binary installed with `go install ...@<version>` reports the module version
-// from its build info instead; a plain `go build` reports "dev".
-var version = "dev"
+// version is set by the release build (.goreleaser.yaml:
+// -ldflags "-X main.version={{ .Version }}"). A binary installed with
+// `go install ...@<version>` reports the module version from its build info
+// instead; a plain `go build` from a checkout reports devVersion.
+var version = ""
+
+// devVersion names the release this source tree is preparing.
+const devVersion = "0.2.0-dev"
 
 func versionString() string {
-	if version != "dev" {
+	if version != "" {
 		return version
 	}
 	if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
 		return bi.Main.Version
 	}
-	return version
+	return devVersion
 }
 
 func main() {
@@ -50,6 +55,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdVerify(args[1:], stdout, stderr)
 	case "hash":
 		return cmdHash(args[1:], stdout, stderr)
+	case "profiles":
+		for _, id := range evidence.Profiles() {
+			fmt.Fprintln(stdout, id)
+		}
+		return 0
 	case "vectors":
 		_, err := stdout.Write(vectors.MarshalVectors(vectors.Build().Vectors))
 		if err != nil {
@@ -72,17 +82,22 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 func usage(w io.Writer) {
 	fmt.Fprint(w, `usage:
-  trail-evidence verify <file.jsonl|-> [--pubkey <hex|file>] [--require-signatures] [--json]
+  trail-evidence verify <file.jsonl|-> [--pubkey <hex|file>] [--require-signatures] [--strict] [--json]
   trail-evidence hash <record.json|->
+  trail-evidence profiles
   trail-evidence vectors
   trail-evidence version
 
-verify  checks a JSON Lines journal: schema, content_hash, chain_hash,
-        prev_hash links, seq continuity, restarts and (with --pubkey)
-        Ed25519 signatures. Exit 0 when the chain is intact, 1 otherwise.
-hash    recomputes content_hash and chain_hash of one record and prints
-        the canonical core.
-vectors prints the reference test vectors (testdata/vectors.json).
+verify   checks a JSON Lines journal: schema, content_hash, chain_hash,
+         prev_hash links, seq, restarts, profiles and (with --pubkey)
+         Ed25519 signatures, and gives every record a state: valid,
+         invalid, unknown or outside_scope. Exit 0 when no record is
+         invalid, 1 otherwise. --strict also fails on unknown and
+         outside_scope records and on profiles this verifier does not know.
+hash     recomputes content_hash and chain_hash of one record and prints
+         the canonical core, its findings and its state on its own.
+profiles lists the profiles this verifier knows.
+vectors  prints the reference test vectors (testdata/vectors.json).
 `)
 }
 
@@ -108,7 +123,7 @@ func splitArgs(args []string) (positional []string, flags map[string]string, err
 			}
 			flags[name] = args[i+1]
 			i++
-		case "json", "require-signatures":
+		case "json", "require-signatures", "strict":
 			flags[name] = "true"
 		default:
 			return nil, nil, fmt.Errorf("unknown flag --%s", name)
@@ -130,7 +145,7 @@ func cmdVerify(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			fmt.Fprintln(stderr, err)
 		}
-		fmt.Fprintln(stderr, "usage: trail-evidence verify <file.jsonl|-> [--pubkey <hex|file>] [--require-signatures] [--json]")
+		fmt.Fprintln(stderr, "usage: trail-evidence verify <file.jsonl|-> [--pubkey <hex|file>] [--require-signatures] [--strict] [--json]")
 		return 2
 	}
 	var opts evidence.Options
@@ -149,6 +164,7 @@ func cmdVerify(args []string, stdout, stderr io.Writer) int {
 		}
 		opts.RequireSignatures = true
 	}
+	opts.Strict = flags["strict"] == "true"
 	in, err := openInput(pos[0])
 	if err != nil {
 		fmt.Fprintln(stderr, err)
@@ -203,20 +219,22 @@ func cmdHash(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
-	rec, findings := evidence.VerifyRecord(raw)
+	c := evidence.CheckRecord(raw)
 	out := map[string]any{
-		"payload_jcs":  string(h.PayloadJCS),
-		"content_hash": h.ContentHash,
-		"core_jcs":     string(h.CoreJCS),
-		"chain_hash":   h.ChainHash,
+		"payload_jcs":   string(h.PayloadJCS),
+		"content_hash":  h.ContentHash,
+		"core_jcs":      string(h.CoreJCS),
+		"chain_hash":    h.ChainHash,
+		"state":         c.State,
+		"profile_state": c.ProfileState,
 	}
-	if rec != nil {
-		out["recorded_content_hash"] = rec.ContentHash
-		out["recorded_chain_hash"] = rec.ChainHash
-		out["matches"] = rec.ContentHash == h.ContentHash && rec.ChainHash == h.ChainHash
+	if c.Record != nil {
+		out["recorded_content_hash"] = c.Record.ContentHash
+		out["recorded_chain_hash"] = c.Record.ChainHash
+		out["matches"] = c.Record.ContentHash == h.ContentHash && c.Record.ChainHash == h.ChainHash
 	}
-	if len(findings) > 0 {
-		out["findings"] = findings
+	if len(c.Findings) > 0 {
+		out["findings"] = c.Findings
 	}
 	enc := json.NewEncoder(stdout)
 	enc.SetEscapeHTML(false)

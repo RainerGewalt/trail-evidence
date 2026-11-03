@@ -57,15 +57,20 @@ func marshalNoEscape(v any) ([]byte, error) {
 }
 
 // coreJCS assembles the chain core from the raw members of a record object
-// and returns its canonical bytes. Working on the raw members (rather than on
-// re-encoded structs) keeps Go and Python verifiers byte-identical even for
-// inputs that a struct round trip would normalise.
-func coreJCS(obj map[string]json.RawMessage) ([]byte, error) {
+// and returns its canonical bytes. contentHash replaces the declared
+// content_hash. Working on the raw members (rather than on re-encoded
+// structs) keeps the verifiers byte-identical even for inputs that a struct
+// round trip would normalise, and hashes every member, seq included, as it
+// is written in the record.
+func coreJCS(obj map[string]json.RawMessage, contentHash string) ([]byte, error) {
 	var buf bytes.Buffer
 	buf.WriteByte('{')
 	first := true
 	for _, k := range coreMembers {
 		v, ok := obj[k]
+		if k == "content_hash" {
+			v, ok = json.RawMessage(`"`+contentHash+`"`), true
+		}
 		if !ok {
 			continue
 		}
@@ -99,6 +104,10 @@ func ComputeHashes(raw []byte) (Hashes, error) {
 	if err != nil {
 		return Hashes{}, err
 	}
+	return computeHashes(obj)
+}
+
+func computeHashes(obj map[string]json.RawMessage) (Hashes, error) {
 	payload, ok := obj["payload"]
 	if !ok {
 		return Hashes{}, fmt.Errorf("record has no payload member")
@@ -108,8 +117,7 @@ func ComputeHashes(raw []byte) (Hashes, error) {
 		return Hashes{}, fmt.Errorf("payload: %w", err)
 	}
 	h := Hashes{PayloadJCS: pj, ContentHash: HashBytes(pj)}
-	obj["content_hash"] = json.RawMessage(`"` + h.ContentHash + `"`)
-	cj, err := coreJCS(obj)
+	cj, err := coreJCS(obj, h.ContentHash)
 	if err != nil {
 		return Hashes{}, fmt.Errorf("core: %w", err)
 	}

@@ -60,7 +60,8 @@ release:
 
     Other ways to install: `go install github.com/RainerGewalt/trail-evidence/go/cmd/trail-evidence@{{ .Tag }}`
     (needs the module tag `go/{{ .Tag }}`, which the release workflow pushes),
-    `pip install trail-evidence` (uploaded manually, see docs/RELEASING.md),
+    `pip install trail-evidence` (uploaded by the release workflow through
+    PyPI trusted publishing once it is set up, see docs/RELEASING.md),
     or the GitHub Action `RainerGewalt/trail-evidence@{{ .Tag }}`.
 
 snapshot:

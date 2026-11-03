@@ -9,8 +9,11 @@ version number.
 1. `CHANGELOG.md`: move the entries under "Unreleased" to a section
    `## X.Y.Z - YYYY-MM-DD`.
 2. `python/pyproject.toml` and `python/trail_evidence/__init__.py`: set
-   `version` and `__version__` to `X.Y.Z`. The release workflow fails when
-   the tag and `pyproject.toml` disagree.
+   `version` and `__version__` to `X.Y.Z`; `devVersion` in
+   `go/cmd/trail-evidence/main.go` names the next version after the tag
+   (`X.Y+1.0-dev`). The release workflow fails when the tag and
+   `pyproject.toml` disagree. Release binaries get their version from the
+   tag (`-ldflags "-X main.version={{ .Version }}"` in `.goreleaser.yaml`).
 3. Run the full check locally (see `CONTRIBUTING.md`), plus
    `goreleaser check` and, if GoReleaser is installed,
    `goreleaser release --snapshot --clean` to see the archives in `dist/`.
@@ -34,29 +37,72 @@ git push origin vX.Y.Z
   a pseudo-version of `main`;
 - builds the Python sdist and wheel, installs the wheel, runs
   `trail-evidence-py verify` on an example journal and keeps `python/dist/`
-  as the workflow artifact `python-dist-vX.Y.Z`.
+  as the workflow artifact `python-dist-vX.Y.Z`;
+- uploads that artifact to PyPI through trusted publishing (job `pypi`,
+  below). A failed upload is reported in the log and the job summary and
+  does not fail the release.
 
 The GitHub Action needs no extra step: `uses: RainerGewalt/trail-evidence@vX.Y.Z`
 resolves the same tag and installs the matching CLI.
 
-## PyPI (manual)
+## PyPI (trusted publishing)
 
-The workflow does not upload to PyPI. After the release workflow has
-finished:
+The job `pypi` in `.github/workflows/release.yml` uploads the sdist and wheel
+with `pypa/gh-action-pypi-publish`. There is no API token: the job runs in
+the GitHub environment `pypi` with `id-token: write`, and PyPI accepts the
+upload because it trusts this repository's workflow `release.yml` in that
+environment.
+
+### One-time setup
+
+The project `trail-evidence` does not exist on PyPI until its first upload,
+so the trust is registered as a **pending publisher**:
+
+1. Sign in to <https://pypi.org> with the account that is to own the
+   project, and open "Your account" → "Publishing"
+   (<https://pypi.org/manage/account/publishing/>).
+2. Under "Add a new pending publisher", choose GitHub and enter exactly:
+
+   | Field | Value |
+   |---|---|
+   | PyPI Project Name | `trail-evidence` |
+   | Owner | `RainerGewalt` |
+   | Repository name | `trail-evidence` |
+   | Workflow name | `release.yml` |
+   | Environment name | `pypi` |
+
+3. Optional, on GitHub: Settings → Environments → `pypi`. The workflow
+   creates the environment on its first run if it does not exist; adding
+   required reviewers there makes every upload wait for an approval.
+
+The first successful upload creates the project, and the pending publisher
+becomes a regular trusted publisher of it. A pending publisher does not
+reserve the name: until the first upload, another account could register a
+project called `trail-evidence`, so the setup is best done shortly before
+the first release that is to reach PyPI.
+
+### Without the setup
+
+Until the pending publisher exists, the upload step fails, the job prints a
+warning ("PyPI upload skipped") with these instructions, and the release is
+still green: binaries, checksums, the Go module tag and the Python artifact
+are unaffected (`continue-on-error` on the step and the job). After the
+setup, re-run the job `pypi` of that workflow run, or upload by hand:
 
 ```bash
 gh run download --repo RainerGewalt/trail-evidence -n python-dist-vX.Y.Z -D dist-py
 python3 -m pip install --upgrade twine
 python3 -m twine check dist-py/*
-python3 -m twine upload dist-py/*        # asks for the PyPI API token
+python3 -m twine upload dist-py/*        # asks for a project-scoped PyPI API token
 ```
 
-Use a project-scoped API token and do not store it in the repository. Check
-the result in a fresh virtual environment:
+Do not store a token in the repository. Check the result in a fresh virtual
+environment:
 
 ```bash
 python3 -m venv /tmp/te && /tmp/te/bin/pip install trail-evidence==X.Y.Z
 /tmp/te/bin/trail-evidence-py verify examples/transfer-worker.jsonl
+/tmp/te/bin/trail-evidence-py profiles
 ```
 
 ## After the release

@@ -2,9 +2,11 @@ name: release
 
 # Builds the trail-evidence binaries with GoReleaser when a tag v* is pushed,
 # attaches them to the GitHub release, pushes the Go module tag go/<tag> so
-# that `go install .../go/cmd/trail-evidence@<tag>` resolves, and builds the
-# Python distribution as a workflow artifact. PyPI upload is manual, see
-# docs/RELEASING.md.
+# that `go install .../go/cmd/trail-evidence@<tag>` resolves, builds the
+# Python distribution as a workflow artifact and uploads it to PyPI through
+# trusted publishing (OIDC, no token). The PyPI upload needs a one-time setup
+# on pypi.org (docs/RELEASING.md); without it the job reports why and the
+# release still succeeds.
 
 on:
   push:
@@ -107,3 +109,46 @@ jobs:
           name: python-dist-${{ github.ref_name }}
           path: python/dist/
           if-no-files-found: error
+
+  pypi:
+    # Trusted publishing: PyPI accepts the upload because this workflow
+    # (release.yml) in this repository, running in the environment "pypi",
+    # presents a GitHub OIDC token. Set up once on pypi.org as a "pending
+    # publisher" for the project trail-evidence (docs/RELEASING.md). Until
+    # then the upload fails; continue-on-error keeps the release green and the
+    # last step says what to do.
+    name: Publish to PyPI (trusted publishing)
+    needs: [python-dist]
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    environment:
+      name: pypi
+      url: https://pypi.org/project/trail-evidence/
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-dist-${{ github.ref_name }}
+          path: dist/
+      - name: Upload to PyPI
+        id: upload
+        continue-on-error: true
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+      - name: Report the result
+        if: always()
+        env:
+          OUTCOME: ${{ steps.upload.outcome }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if [ "$OUTCOME" = success ]; then
+            echo "Uploaded trail-evidence ${TAG#v} to PyPI."
+            echo "PyPI: uploaded trail-evidence ${TAG#v} (https://pypi.org/project/trail-evidence/${TAG#v}/)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            msg="PyPI upload of trail-evidence ${TAG#v} failed (outcome: $OUTCOME). The GitHub release, the binaries and the Go module tag are not affected. If trusted publishing is not set up yet, register a pending publisher on pypi.org (project trail-evidence, owner RainerGewalt, repository trail-evidence, workflow release.yml, environment pypi) and re-run this job, or upload the artifact python-dist-${TAG} by hand; both are described in docs/RELEASING.md."
+            echo "::warning title=PyPI upload skipped::$msg"
+            echo "$msg" >> "$GITHUB_STEP_SUMMARY"
+          fi

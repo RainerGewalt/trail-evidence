@@ -3,8 +3,9 @@
 Status: **v0.2 draft** (format 0.2 of `trail.evidence/1`, unreleased). The
 format may still change before 1.0. Changes within the `trail.evidence/1`
 schema are additive only once 1.0 is tagged. Format 0.2 is not compatible
-with 0.1 in both directions: `seq` is a decimal string, records carry a state,
-and the finding classes changed (section 9 lists the differences).
+with 0.1 in both directions: `seq` is a decimal string, records carry a
+state, journals a three-valued verdict, and the finding classes changed
+(section 9 lists the differences).
 
 The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are to be interpreted
 as described in RFC 2119 and RFC 8174.
@@ -255,8 +256,35 @@ Every record is in exactly one state:
 
 `invalid` takes precedence over `unknown`: a record after a gap whose own
 hash is wrong is `invalid`, and its `seq_gap` is reported as well. A state
-describes the record, not the options: `strict` (6.4) changes the verdict,
-never a state.
+describes the record, never the options of the verification (6.4).
+
+Four rules of this table are decisions rather than consequences, so they
+are stated with their reason:
+
+- **A skipped `seq` on a linked record is `invalid`, not `unknown`.** When
+  `prev_hash` links to the predecessor that is present, the producer itself
+  says that nothing lies between the two records; a `seq` that skips ahead
+  contradicts that. This is what deleting a record and re-sealing its
+  successor produces, so it must not be mistaken for a journal that is
+  merely incomplete. `unknown` is reserved for a record whose predecessor
+  cannot be checked at all (`prev_hash` does not link to any record in the
+  journal).
+- **`after_unknown` marks only the record directly after an `unknown`
+  record.** Every later record of the run is just as relative to the
+  unknown record, but repeating the notice on each of them would bury the
+  report of a long excerpt; the one notice marks where the relative chain
+  begins.
+- **A record without a usable position takes no part in the chain.** A
+  record without a non-empty `stream_id` or a usable `seq` cannot be placed
+  in a chain. It is `invalid` (`schema_invalid`) and does not change any
+  stream state, so the next record of the stream is judged against the
+  last record that had a position; if it linked to the record without a
+  position, its predecessor is missing for the chain and it is `unknown`
+  (fixture `seq-missing.jsonl`).
+- **`outside_scope` requires a schema identifier.** Only a `schema` of the
+  form `<name>/<major>` names another format or major version. A missing
+  `schema`, a non-string or a free-form value cannot be told apart from a
+  broken record and is `invalid`.
 
 Every record also has a profile state:
 
@@ -276,16 +304,19 @@ Every record also has a profile state:
 | `chain_break` | error | invalid | `prev_hash` does not link to the predecessor although the predecessor is present: `seq` is the expected one (or lower) but `prev_hash` is not the previous `chain_hash`; the first record of a stream has `seq` `"0"` but no genesis `prev_hash` and no restart; a restart's `anchor_hash` matches neither the previous segment's last `chain_hash` nor genesis. |
 | `seq_mismatch` | error | invalid | `seq` contradicts the link: it repeats or goes backwards, or `prev_hash` links to the predecessor but `seq` skips ahead (a record cannot be missing between two linked records; this is what deleting a record and re-sealing its successor looks like). |
 | `signature_invalid` | error | invalid | Signature present but malformed or not verifying with the given key; or, when signatures are required, a record without one. |
-| `profile_invalid` | error | invalid | The payload violates the schema of a known profile. |
-| `seq_gap` | notice; error with `strict` | unknown | `seq` is ahead of the expected value and `prev_hash` does not link to the last checked record of the stream: records are missing from the journal before this one (also at the start of a journal that begins in the middle of a stream). |
-| `outside_scope` | notice; error with `strict` | outside_scope | The record names another format or major version and was not checked. |
-| `profile_unknown` | notice; error with `strict` | (unchanged) | The record's profile is not known to this verifier; its payload was not checked against a profile. |
+| `profile_invalid` | error | invalid | The payload violates the schema of a known profile. A class of its own, separate from `schema_invalid`, so that a defect in the shared envelope and a payload that breaks the producer's profile stay distinguishable. |
+| `seq_gap` | notice | unknown | `seq` is ahead of the expected value and `prev_hash` does not link to the last checked record of the stream: records are missing from the journal before this one (also at the start of a journal that begins in the middle of a stream). |
+| `outside_scope` | notice | outside_scope | The record names another format or major version and was not checked. |
+| `profile_unknown` | notice | (unchanged) | The record's profile is not known to this verifier; its payload was not checked against a profile. |
 | `restart` | notice | (unchanged) | A record with `chain_restart: true`. Reported separately so that breaks and gaps stay distinguishable from intended restarts. |
 | `after_unknown` | notice | (unchanged) | The record links correctly (`prev_hash` and `seq`, or `anchor_hash` of a restart) to a record in state `unknown`. It is valid relative to that record, not relative to the start of the stream. Only the record directly after an `unknown` record carries it. |
 | `legacy_integer_seq` | notice | (unchanged) | `seq` is a JSON number (format 0.1). Accepted during 0.x; `schema_invalid` from 1.0 (3.1). |
 | `number_precision` | notice | (unchanged) | `payload` contains an integer literal outside ±2^53 (no fraction, no exponent). The hashes are still well defined, but the value was rounded by canonicalisation; see 4.3. |
 
-These classes are verifier output. They are not reason codes: a producer
+Severities are fixed per class: a finding has severity error exactly when
+its class makes the record `invalid`. Whether `seq_gap`, `outside_scope` or
+`profile_unknown` fail the journal is decided by the verdict (6.4), not by
+a severity. These classes are verifier output. They are not reason codes: a producer
 never writes them into a record, and `docs/REASON_CODES.md` does not list
 them.
 
@@ -360,23 +391,64 @@ For each non-empty line, in file order:
 
 Verification does not stop at the first error.
 
-### 6.4 Verdict and strict verification
+### 6.4 Verdict, options and exit codes
 
-The journal verifies (`ok`) when no finding has severity error. Without
-strict verification that means: no record is `invalid`. Records in state
-`unknown` or `outside_scope` and profiles in state `outside_scope` are
-counted and reported, but do not fail the journal.
+The journal gets one of three verdicts, from the states of its records:
 
-With **strict** verification (`--strict` on the command line, `strict` in
-the Python and JavaScript APIs and the GitHub Action, the checkbox on the
-browser page) the classes `seq_gap`, `outside_scope` and `profile_unknown`
-are reported with severity error. The journal then verifies only when every
-record is `valid` and every profile was checked. States do not change.
+| Verdict | Condition | Exit code of `verify` |
+|---|---|---|
+| `valid` | Every record is `valid`. | 0 |
+| `invalid` | At least one record is `invalid`. | 1 |
+| `incomplete` | No record is `invalid`, but at least one is `unknown` or `outside_scope`. | 3 |
+
+`incomplete` is a failure by default. A record removed from the middle of a
+journal, or moved out of scope by changing its `schema`, makes the journal
+`incomplete`, not `invalid` (6.6); accepting `incomplete` silently would let
+such a journal pass. Exit code 2 remains reserved for usage and I/O errors.
+
+Two options change what passes, never a record state:
+
+- **allow incomplete** (`--allow-incomplete` on the command line,
+  `AllowIncomplete` in Go, `allow_incomplete` in Python, `allowIncomplete`
+  in JavaScript, a checkbox on the browser page, off by default, and the
+  input `allow-incomplete` of the GitHub Action, default `false`): the
+  verdict stays `incomplete`, but the journal passes (exit code 0). It is
+  meant for journals that are known to be incomplete: a rotated log that
+  starts in the middle of a stream, an excerpt, a file that interleaves
+  records of another format. It is not meant for a journal that is supposed
+  to be complete, because it also accepts a deleted record.
+- **require known profiles** (`--require-known-profiles`,
+  `RequireKnownProfiles`, `require_known_profiles`, `requireKnownProfiles`,
+  a checkbox, the Action input `require-known-profiles`; off by default): a
+  record whose profile state is `outside_scope` counts like a record that is
+  not checked, so the verdict becomes `incomplete` (exit code 3).
+  `allow incomplete` does not accept this case: whoever requires known
+  profiles wants them checked even in an incomplete journal.
+
+Without that option an unknown profile does not affect the verdict: the
+core of the record was checked, only its payload was not evaluated against
+a profile. A verifier that does not know a producer's profile can therefore
+still verify that producer's journals; the notice `profile_unknown` and the
+profile state `outside_scope` say what was not checked.
+
+The verdict and the options determine the report member `ok` (the journal
+passes) and the exit code:
+
+```
+unknown_profiles = require_known_profiles and some profile state is outside_scope
+verdict = invalid     if some state is invalid
+        = incomplete  else if some state is unknown or outside_scope, or unknown_profiles
+        = valid       otherwise
+ok      = verdict == valid
+          or (verdict == incomplete and allow_incomplete and not unknown_profiles)
+exit    = 0 if ok, else 1 if verdict == invalid, else 3
+```
 
 ### 6.5 Report
 
-The report SHOULD contain: `ok`, `strict`, the number of records, errors,
-notices and restarts, the number of signed records and of verified
+The report SHOULD contain: `verdict`, `ok`, the options
+`allow_incomplete` and `require_known_profiles`, the number of records,
+errors, notices and restarts, the number of signed records and of verified
 signatures, `states` (records per state), `profile_states` (records per
 profile state), a summary per stream (`stream_id`, records with a position,
 first and last `seq`, `last_chain_hash`, restarts), `results` (per record:
@@ -391,10 +463,10 @@ strings, like the records.
   re-sealed without a `hash_mismatch`, `chain_break` or `seq_mismatch`.
 - A record removed from a journal without touching the others, or a record
   whose `schema` was changed to another format, leaves the next record
-  `unknown` (`seq_gap`), not `invalid`. Without strict verification such a
-  journal verifies. A passing journal without strict verification means
-  that no record is provably wrong, not that the journal is complete; use
-  strict verification to require that every record is `valid`.
+  `unknown` (`seq_gap`), not `invalid`, and the journal `incomplete`, which
+  fails unless incomplete journals are allowed (6.4). With that option a
+  passing journal means that no record is provably wrong, not that the
+  journal is complete.
 - An unsigned journal can be rewritten wholesale by whoever controls the
   file. Signatures bind the chain to a key; anchoring the latest
   `chain_hash` elsewhere (`anchor`) binds it to a point in time. Neither is
@@ -415,8 +487,8 @@ contains, per vector, the record and the expected payload JCS,
 `content_hash`, core JCS and `chain_hash`, and the state and profile state
 of the record on its own. Every implementation MUST reproduce these values
 byte for byte. `testdata/streams/` holds journals with the findings and the
-state and profile state of every record a verifier MUST report, some of them
-with strict verification. `profiles/` holds the registered profiles with
+state and profile state of every record a verifier MUST report, and the
+verdict and exit code, some of them with the options of 6.4. `profiles/` holds the registered profiles with
 their example payloads and journals. The signing key in `testdata/keys/` is
 a published test key (RFC 8032 test vector 1). Section 10 turns these files
 into the conformance criterion.
@@ -460,16 +532,20 @@ Format 0.2 changed, compared with 0.1:
 
 - `seq` is a decimal string (3.1). A JSON number is still accepted during
   0.x with the notice `legacy_integer_seq`; from 1.0 it is `schema_invalid`.
-- Every record has a state and a profile state (6.1); reports carry
-  `strict`, `states`, `profile_states` and `results`, and write `seq` as a
-  decimal string.
+- Every record has a state and a profile state (6.1), every journal a
+  verdict `valid`, `invalid` or `incomplete` (6.4). `incomplete` fails with
+  exit code 3 unless `allow incomplete` is set; `require known profiles`
+  makes unknown profiles count as incomplete. Reports carry `verdict`,
+  `allow_incomplete`, `require_known_profiles`, `states`, `profile_states`
+  and `results`, and write `seq` as a decimal string.
 - The optional core member `profile` (3.2, 3.4).
 - New finding classes `seq_mismatch`, `profile_invalid`, `outside_scope`,
   `profile_unknown`, `after_unknown`, `legacy_integer_seq`. `seq_gap` is a
-  notice that makes a record `unknown`; a skipped, repeated or backwards
-  `seq` on a linked record is `seq_mismatch`. A journal that starts in the
-  middle of a stream is `unknown` at its first record instead of a
-  `chain_break`.
+  notice that makes a record `unknown` and the journal `incomplete`; a
+  skipped, repeated or backwards `seq` on a linked record is
+  `seq_mismatch`. A journal that starts in the middle of a stream is
+  `unknown` at its first record and `incomplete` instead of `invalid`
+  (`chain_break`).
 - `schema_invalid` is reported once per record.
 - A record whose `schema` names another format or major version is
   `outside_scope` instead of `schema_invalid`.
@@ -497,8 +573,9 @@ when it meets producer conformance and in addition
    the record's state on its own (`expected_state`: `valid`, `invalid` or
    `outside_scope`) and profile state (`expected_profile_state`);
 2. for every case in `testdata/streams/expected.json`, given the case's
-   `pubkey`, `require_signatures` and `strict`, reaches exactly the listed
-   `ok`, `records` and `restarts`, gives every record exactly the state in
+   `pubkey`, `require_signatures`, `allow_incomplete` and
+   `require_known_profiles`, reaches exactly the listed `verdict`, `ok`,
+   `exit_code`, `records` and `restarts`, gives every record exactly the state in
    `states` and the profile state in `profile_states` (by index), and
    reports exactly the listed distinct (`index`, `class`) pairs in the
    listed order of first occurrence. Reporting the same pair more than once
@@ -507,7 +584,8 @@ when it meets producer conformance and in addition
 3. knows every profile in `profiles/` at the suite revision: it accepts every
    payload under `valid` and rejects every payload under `invalid` in each
    `<major>.examples.json`, and verifies each `<major>.journal.jsonl` with
-   strict verification, every record `valid` with profile state `valid`. A
+   `require known profiles` to the verdict `valid`, every record with
+   profile state `valid`. A
    verifier that does not know a profile still conforms for everything else,
    but MUST report that profile as `profile_unknown`.
 
@@ -539,7 +617,8 @@ conformant stays conformant for every case that existed at its revision.
 reports each vector and fixture. It is informative: it expects the command
 to offer `hash <record.json>` (with `state` and `profile_state` in its
 output) and `verify <journal.jsonl> [--pubkey <file>]
-[--require-signatures] [--strict] --json` (with `results`) with the output
-members of the reference CLI (see README.md). The criterion is the data above, not the script; an
+[--require-signatures] [--allow-incomplete] [--require-known-profiles]
+--json` (with `verdict` and `results`, exit codes 0, 1 and 3 as in 6.4)
+with the output members of the reference CLI (see README.md). The criterion is the data above, not the script; an
 implementation without a CLI can check the same files in its own tests, as
 the Go, Python and JavaScript implementations here do.

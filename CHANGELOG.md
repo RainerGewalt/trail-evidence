@@ -6,6 +6,13 @@ tagged. Until then the record format is a draft and may change.
 
 ## Unreleased
 
+Nothing yet.
+
+## 0.1.0 - 2026-11-03
+
+First tagged draft of `trail.evidence/1`. The record format may still change
+before 1.0; see the open design decisions in issue #1.
+
 ### Added
 
 - Prebuilt binaries: `.goreleaser.yaml` builds `trail-evidence` for Linux,

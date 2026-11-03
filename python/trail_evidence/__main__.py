@@ -8,6 +8,7 @@ import sys
 
 from . import record as rec
 from .jcs import canonicalize
+from .registry import profiles
 
 
 def _dump(obj) -> str:
@@ -27,10 +28,10 @@ def cmd_verify(args: argparse.Namespace) -> int:
         return 2
     try:
         if args.file == "-":
-            report = rec.verify_stream(sys.stdin, pub, args.require_signatures)
+            report = rec.verify_stream(sys.stdin, pub, args.require_signatures, args.strict)
         else:
             with open(args.file, "r", encoding="utf-8") as fh:
-                report = rec.verify_stream(fh, pub, args.require_signatures)
+                report = rec.verify_stream(fh, pub, args.require_signatures, args.strict)
     except OSError as exc:
         print(exc, file=sys.stderr)
         return 2
@@ -40,7 +41,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
         print(report.summary())
         for f in report.findings:
             seq = "-" if f.seq is None else str(f.seq)
-            sid = "" if f.stream_id is None else f.stream_id
+            sid = f.stream_id or ""
             print(f'  {f.severity:<7} {f.cls:<17} record #{f.index} (line {f.line}, stream "{sid}", seq {seq}): {f.message}')
     return 0 if report.ok else 1
 
@@ -51,28 +52,36 @@ def cmd_hash(args: argparse.Namespace) -> int:
     except OSError as exc:
         print(exc, file=sys.stderr)
         return 2
-    record, findings = rec.verify_record(raw)
-    if record is None:
-        print(findings[0].message, file=sys.stderr)
+    try:
+        parsed = rec._loads(raw)
+    except ValueError as exc:
+        print(f"invalid JSON: {exc}", file=sys.stderr)
+        return 2
+    if not isinstance(parsed, dict):
+        print("record is not a JSON object", file=sys.stderr)
         return 2
     try:
-        h = rec.compute_hashes(record)
+        h = rec.compute_hashes(parsed)
     except (TypeError, ValueError) as exc:
         print(exc, file=sys.stderr)
         return 2
+    c = rec.check_record(raw)
     out = {
         "payload_jcs": h["payload_jcs"].decode("utf-8"),
         "content_hash": h["content_hash"],
         "core_jcs": h["core_jcs"].decode("utf-8"),
         "chain_hash": h["chain_hash"],
-        "recorded_content_hash": record.get("content_hash"),
-        "recorded_chain_hash": record.get("chain_hash"),
-        "matches": record.get("content_hash") == h["content_hash"] and record.get("chain_hash") == h["chain_hash"],
+        "state": c.state,
+        "profile_state": c.profile_state,
     }
-    if findings:
-        out["findings"] = [f.to_dict() for f in findings]
+    if c.record is not None:
+        out["recorded_content_hash"] = c.record.get("content_hash")
+        out["recorded_chain_hash"] = c.record.get("chain_hash")
+        out["matches"] = c.record.get("content_hash") == h["content_hash"] and c.record.get("chain_hash") == h["chain_hash"]
+    if c.findings:
+        out["findings"] = [f.to_dict() for f in c.findings]
     print(_dump(out))
-    return 0 if out["matches"] else 1
+    return 1 if out.get("matches") is False else 0
 
 
 def cmd_check_vectors(args: argparse.Namespace) -> int:
@@ -89,9 +98,12 @@ def cmd_check_vectors(args: argparse.Namespace) -> int:
             "expected_chain_hash": h["chain_hash"],
         }
         bad = [k for k, val in got.items() if v[k] != val]
-        _, findings = rec.verify_record(v["record"])
+        c = rec.check_record(v["record"])
+        findings = c.findings
         classes = {f.cls for f in findings if f.severity == rec.ERROR}
         notices = [f.cls for f in findings if f.severity == rec.NOTICE]
+        if (c.state, c.profile_state) != (v.get("expected_state"), v.get("expected_profile_state")):
+            bad.append(f"state:{c.state}/{c.profile_state}")
         if notices != v.get("expected_notices", []):
             bad.append("notices:" + ",".join(notices))
         if v["expected_valid"] and classes:
@@ -114,8 +126,14 @@ def cmd_check_vectors(args: argparse.Namespace) -> int:
 
 def cmd_canon(args: argparse.Namespace) -> int:
     raw = sys.stdin.read() if args.file == "-" else open(args.file, "r", encoding="utf-8").read()
-    sys.stdout.buffer.write(canonicalize(json.loads(raw)))
+    sys.stdout.buffer.write(canonicalize(rec._loads(raw)))
     sys.stdout.buffer.write(b"\n")
+    return 0
+
+
+def cmd_profiles(args: argparse.Namespace) -> int:
+    for pid in profiles():
+        print(pid)
     return 0
 
 
@@ -127,6 +145,8 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("file", help="journal path, or - for stdin")
     v.add_argument("--pubkey", help="Ed25519 public key as 64 hex characters or a file (hex or PEM)")
     v.add_argument("--require-signatures", action="store_true", help="treat unsigned records as signature_invalid")
+    v.add_argument("--strict", action="store_true",
+                   help="also fail on unknown and outside_scope records and on profiles this verifier does not know")
     v.add_argument("--json", action="store_true", help="print the full report as JSON")
     v.set_defaults(func=cmd_verify)
     h = sub.add_parser("hash", help="recompute the hashes of one record")
@@ -135,6 +155,8 @@ def build_parser() -> argparse.ArgumentParser:
     c = sub.add_parser("check-vectors", help="reproduce every vector of a vectors.json")
     c.add_argument("file")
     c.set_defaults(func=cmd_check_vectors)
+    pr = sub.add_parser("profiles", help="list the profiles this verifier knows")
+    pr.set_defaults(func=cmd_profiles)
     k = sub.add_parser("canon", help="print the JCS form of a JSON document")
     k.add_argument("file", help="JSON path, or - for stdin")
     k.set_defaults(func=cmd_canon)

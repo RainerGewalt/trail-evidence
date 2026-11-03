@@ -4,7 +4,9 @@ import unittest
 
 from trail_evidence import (
     GENESIS_HASH,
+    MAX_SEQ,
     NO_POLICY,
+    check_record,
     compute_hashes,
     key_id,
     parse_public_key,
@@ -15,11 +17,13 @@ from trail_evidence import (
     verify_stream,
 )
 from trail_evidence import record as rec
+from trail_evidence import registry
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 VECTORS = os.path.join(ROOT, "testdata", "vectors.json")
 STREAMS = os.path.join(ROOT, "testdata", "streams")
 EXAMPLES = os.path.join(ROOT, "examples")
+PROFILES = os.path.join(ROOT, "profiles")
 
 
 def load_vectors():
@@ -39,8 +43,10 @@ class Vectors(unittest.TestCase):
                 self.assertEqual(h["content_hash"], v["expected_content_hash"])
                 self.assertEqual(h["core_jcs"].decode("utf-8"), v["expected_core_jcs"])
                 self.assertEqual(h["chain_hash"], v["expected_chain_hash"])
-                record, findings = verify_record(json.dumps(v["record"], ensure_ascii=False))
+                c = check_record(json.dumps(v["record"], ensure_ascii=False))
+                record, findings = c.record, c.findings
                 self.assertIsNotNone(record)
+                self.assertEqual((c.state, c.profile_state), (v["expected_state"], v["expected_profile_state"]))
                 classes = [f.cls for f in findings if f.severity == rec.ERROR]
                 notices = [f.cls for f in findings if f.severity == rec.NOTICE]
                 self.assertEqual(notices, v.get("expected_notices", []))
@@ -78,13 +84,16 @@ class StreamFixtures(unittest.TestCase):
             index = json.load(fh)
         self.assertTrue(index["cases"])
         for case in index["cases"]:
-            with self.subTest(case["file"]):
+            strict = case.get("strict", False)
+            with self.subTest(case["file"], strict=strict):
                 pub = None
                 if case.get("pubkey"):
                     pub = parse_public_key(os.path.join(directory, case["pubkey"]))
                 with open(os.path.join(directory, case["file"]), "r", encoding="utf-8") as fh:
-                    report = verify_stream(fh, pub, case.get("require_signatures", False))
+                    report = verify_stream(fh, pub, case.get("require_signatures", False), strict)
                 self.assertEqual(report.ok, case["ok"], report.summary())
+                self.assertEqual(report.ok, report.errors == 0)
+                self.assertEqual(report.strict, strict)
                 self.assertEqual(report.records, case["records"])
                 self.assertEqual(report.restarts, case["restarts"])
                 got = []
@@ -94,6 +103,11 @@ class StreamFixtures(unittest.TestCase):
                         got.append(pair)
                 want = [(f["index"], f["class"]) for f in case["findings"]]
                 self.assertEqual(got, want)
+                self.assertEqual([r.index for r in report.results], list(range(report.records)))
+                self.assertEqual([r.state for r in report.results], case["states"])
+                self.assertEqual([r.profile_state for r in report.results], case["profile_states"])
+                for state in rec.STATES:
+                    self.assertEqual(report.states[state], case["states"].count(state), state)
 
 
 class Examples(unittest.TestCase):
@@ -163,7 +177,15 @@ class Sealing(unittest.TestCase):
             lambda d: d["time"].__setitem__("recorded_at", "2026-11-02T00:00:00Z"),
             lambda d: d.__setitem__("seq", -1),
             lambda d: d.__setitem__("seq", 1.0),
+            lambda d: d.__setitem__("seq", "-1"),
+            lambda d: d.__setitem__("seq", "00"),
+            lambda d: d.__setitem__("seq", str(MAX_SEQ + 1)),
+            lambda d: d.__setitem__("seq", True),
+            lambda d: d.__delitem__("seq"),
             lambda d: d.__setitem__("chain_restart", False),
+            lambda d: d.__setitem__("profile", "example.measurement"),
+            lambda d: d.__setitem__("profile", 7),
+            lambda d: d.__setitem__("schema", "Trail Evidence"),
         ]
         for i, m in enumerate(mutations):
             with self.subTest(i):
@@ -171,10 +193,118 @@ class Sealing(unittest.TestCase):
                 m(d)
                 _, findings = verify_record(d)
                 self.assertIn(rec.SCHEMA_INVALID, [f.cls for f in findings])
-        for raw in ("[1,2]", "not json", ""):
+        for raw in ("[1,2]", "not json", "", '{"a":NaN}', "Infinity"):
             record, findings = verify_record(raw)
             self.assertIsNone(record)
             self.assertEqual(findings[0].cls, rec.SCHEMA_INVALID)
+
+    def test_seq_forms(self):
+        r = seal(self.base(), GENESIS_HASH)
+        self.assertEqual(r["seq"], "0")
+        text = json.dumps(r)
+        cases = [
+            ('"0"', True, False), (f'"{MAX_SEQ}"', True, False), ('"9007199254740993"', True, False),
+            ('"\\u0037"', True, False), ("7", True, True), (str(MAX_SEQ), True, True),
+            (str(MAX_SEQ + 1), False, False), (f'"{MAX_SEQ + 1}"', False, False), ('"007"', False, False),
+            ('""', False, False), ('"7.0"', False, False), ("-0", False, False), ("0.0", False, False),
+            ("1e2", False, False), ("-1", False, False),
+        ]
+        for lit, usable, legacy in cases:
+            with self.subTest(lit):
+                c = check_record(text.replace('"seq": "0"', '"seq": ' + lit, 1))
+                classes = [f.cls for f in c.findings]
+                self.assertEqual(rec.SCHEMA_INVALID not in classes, usable, classes)
+                self.assertEqual(rec.LEGACY_INTEGER_SEQ in classes, legacy, classes)
+                self.assertEqual(c.seq.ok, usable)
+
+    def test_seal_normalises_seq(self):
+        r = self.base()
+        r["seq"] = MAX_SEQ
+        seal(r, GENESIS_HASH)
+        self.assertEqual(r["seq"], str(MAX_SEQ))
+        for bad in (-1, MAX_SEQ + 1, "01", 1.0, True):
+            r = self.base()
+            r["seq"] = bad
+            with self.assertRaises(ValueError):
+                seal(r, GENESIS_HASH)
+
+
+class Profiles(unittest.TestCase):
+    def test_package_data_matches_registry(self):
+        want = {}
+        for name in sorted(os.listdir(PROFILES)):
+            d = os.path.join(PROFILES, name)
+            if not os.path.isdir(d):
+                continue
+            for f in os.listdir(d):
+                if f.endswith(".schema.json"):
+                    with open(os.path.join(d, f), "rb") as fh:
+                        want[name + "/" + f[: -len(".schema.json")]] = fh.read()
+        self.assertTrue(want)
+        self.assertEqual(registry.profiles(), sorted(want))
+        for pid, raw in want.items():
+            self.assertEqual(registry.profile_schema(pid), raw, f"{pid}: run scripts/profiles.py --write")
+
+    def test_examples(self):
+        found = 0
+        for name in sorted(os.listdir(PROFILES)):
+            d = os.path.join(PROFILES, name)
+            if not os.path.isdir(d):
+                continue
+            for f in sorted(os.listdir(d)):
+                if not f.endswith(".examples.json"):
+                    continue
+                found += 1
+                with open(os.path.join(d, f), "r", encoding="utf-8") as fh:
+                    ex = rec._loads(fh.read())
+                self.assertTrue(ex["valid"] and ex["invalid"])
+                for case in ex["valid"]:
+                    with self.subTest(ex["profile"], case=case["description"]):
+                        self.assertEqual(registry.validate_payload(ex["profile"], case["payload"]), (True, []))
+                for case in ex["invalid"]:
+                    with self.subTest(ex["profile"], case=case["description"]):
+                        known, problems = registry.validate_payload(ex["profile"], case["payload"])
+                        self.assertTrue(known)
+                        self.assertTrue(problems)
+        self.assertGreater(found, 0)
+        self.assertEqual(registry.validate_payload("example.measurement/2", {}), (False, []))
+
+    def test_journals(self):
+        found = 0
+        for name in sorted(os.listdir(PROFILES)):
+            d = os.path.join(PROFILES, name)
+            if not os.path.isdir(d):
+                continue
+            for f in sorted(os.listdir(d)):
+                if not f.endswith(".journal.jsonl"):
+                    continue
+                found += 1
+                with open(os.path.join(d, f), "r", encoding="utf-8") as fh:
+                    report = verify_stream(fh, strict=True)
+                self.assertTrue(report.ok, report.summary())
+                self.assertEqual(report.states[rec.VALID], report.records)
+                self.assertEqual(report.profile_states[rec.VALID], report.records)
+        self.assertGreater(found, 0)
+
+    def test_subset_rejects_other_keywords(self):
+        for doc in ({"type": "object", "additionalProperties": False}, {"enum": [1]}, {"type": "date"},
+                    {"required": "a"}, {"properties": []}, []):
+            with self.assertRaises(ValueError):
+                registry.compile_schema(doc)
+
+
+class Summary(unittest.TestCase):
+    def test_lines(self):
+        cases = [
+            ("valid-chain.jsonl", False, "OK: 3 record(s) in 1 stream(s), hash chain intact"),
+            ("seq-gap.jsonl", False, "OK: 4 record(s) in 1 stream(s), no invalid record, 1 unknown"),
+            ("seq-gap.jsonl", True, "FAIL (strict): 4 record(s) in 1 stream(s), 1 error(s), 1 unknown"),
+            ("outside-scope.jsonl", False, "OK: 4 record(s) in 1 stream(s), hash chain intact, 2 outside scope"),
+            ("seq-mismatch.jsonl", False, "FAIL: 3 record(s) in 1 stream(s), 1 error(s)"),
+        ]
+        for name, strict, want in cases:
+            with open(os.path.join(STREAMS, name), "r", encoding="utf-8") as fh:
+                self.assertEqual(verify_stream(fh, strict=strict).summary(), want)
 
 
 if __name__ == "__main__":

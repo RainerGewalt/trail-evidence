@@ -7,13 +7,15 @@ import binascii
 import hashlib
 import json
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from typing import Any, Iterable, Optional, TextIO, Union
 
 from . import ed25519
+from . import registry as _profiles
 from .jcs import canonicalize
 
 SCHEMA = "trail.evidence/1"
+MAX_SEQ = 2**64 - 1
 HASH_PREFIX = "sha256:"
 GENESIS_HASH = HASH_PREFIX + "0" * 64
 NO_POLICY = {"id": "none", "version": "0", "hash": GENESIS_HASH}
@@ -28,6 +30,7 @@ ANCHOR_KINDS = {"trailmq", "tsa", "worm", "other"}
 CORE_MEMBERS = (
     "schema", "producer", "stream_id", "seq", "prev_hash", "event_type",
     "time", "actor", "policy", "content_hash", "chain_restart", "anchor_hash",
+    "profile",
 )
 REQUIRED_MEMBERS = (
     "schema", "producer", "stream_id", "seq", "prev_hash", "event_type",
@@ -35,7 +38,7 @@ REQUIRED_MEMBERS = (
 )
 KNOWN_MEMBERS = set(REQUIRED_MEMBERS) | {
     "chain_restart", "anchor_hash", "signature", "correlation_id", "job_id",
-    "decision_id", "context", "redaction", "anchor",
+    "decision_id", "context", "redaction", "anchor", "profile",
 }
 _OBJECT_MEMBERS = {
     "producer": {"kind", "id", "version"},
@@ -52,24 +55,53 @@ RECORDED_AT_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9
 TIMESTAMP_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,9})?Z$")
 EVENT_TYPE_RE = re.compile(r"^[a-z][a-z0-9_-]*\.[a-z][a-z0-9_-]*\.[a-z][a-z0-9_-]*$")
 JSON_POINTER_RE = re.compile(r"^(/([^/~]|~0|~1)*)*$")
+SEQ_RE = re.compile(r"^(0|[1-9][0-9]*)$")
+PROFILE_RE = _profiles.PROFILE_RE
+SCHEMA_ID_RE = re.compile(r"^[a-z][a-z0-9_-]*(\.[a-z][a-z0-9_-]*)*/(0|[1-9][0-9]*)$")
 
-# Finding classes
+# Finding classes (SPEC.md section 6.2). Errors make a record invalid.
+SCHEMA_INVALID = "schema_invalid"
 HASH_MISMATCH = "hash_mismatch"
 CHAIN_BREAK = "chain_break"
-SEQ_GAP = "seq_gap"
-RESTART = "restart"
+SEQ_MISMATCH = "seq_mismatch"
 SIGNATURE_INVALID = "signature_invalid"
-SCHEMA_INVALID = "schema_invalid"
-NUMBER_PRECISION = "number_precision"  # notice, never an error
+PROFILE_INVALID = "profile_invalid"
+# Notices. seq_gap makes a record unknown; with strict verification seq_gap,
+# outside_scope and profile_unknown are reported as errors.
+SEQ_GAP = "seq_gap"
+OUTSIDE_SCOPE = "outside_scope"
+PROFILE_UNKNOWN = "profile_unknown"
+RESTART = "restart"
+AFTER_UNKNOWN = "after_unknown"
+LEGACY_INTEGER_SEQ = "legacy_integer_seq"
+NUMBER_PRECISION = "number_precision"
+
+ERROR_CLASSES = (SCHEMA_INVALID, HASH_MISMATCH, CHAIN_BREAK, SEQ_MISMATCH, SIGNATURE_INVALID, PROFILE_INVALID)
+NOTICE_CLASSES = (SEQ_GAP, OUTSIDE_SCOPE, PROFILE_UNKNOWN, RESTART, AFTER_UNKNOWN, LEGACY_INTEGER_SEQ, NUMBER_PRECISION)
+STRICT_CLASSES = (SEQ_GAP, OUTSIDE_SCOPE, PROFILE_UNKNOWN)
+
+# Record states and profile states (SPEC.md section 6.1).
+VALID = "valid"
+INVALID = "invalid"
+UNKNOWN = "unknown"
+OUTSIDE = "outside_scope"
+PROFILE_NONE = "none"
+STATES = (VALID, INVALID, UNKNOWN, OUTSIDE)
+PROFILE_STATES = (PROFILE_NONE, VALID, INVALID, OUTSIDE)
 
 MAX_SAFE_INTEGER = 2**53
 
 ERROR = "error"
 NOTICE = "notice"
 
+AFTER_UNKNOWN_MESSAGE = ("links to a record in state unknown; this record is valid relative to that record, "
+                         "not to the start of the stream")
+
 
 @dataclass
 class Finding:
+    """One observation about one record. seq is the record's usable seq."""
+
     index: int
     line: int
     cls: str
@@ -79,11 +111,11 @@ class Finding:
     seq: Optional[int] = None
 
     def to_dict(self) -> dict:
-        d = {"index": self.index, "line": self.line}
-        if self.stream_id is not None:
+        d: dict = {"index": self.index, "line": self.line}
+        if self.stream_id:
             d["stream_id"] = self.stream_id
         if self.seq is not None:
-            d["seq"] = self.seq
+            d["seq"] = str(self.seq)
         d.update({"class": self.cls, "severity": self.severity, "message": self.message})
         return d
 
@@ -97,16 +129,48 @@ class StreamSummary:
     last_chain_hash: str = ""
     restarts: int = 0
     seen: bool = field(default=False, repr=False, compare=False)
+    last_unknown: bool = field(default=False, repr=False, compare=False)
 
     def to_dict(self) -> dict:
-        d = asdict(self)
-        d.pop("seen")
+        return {
+            "stream_id": self.stream_id,
+            "records": self.records,
+            "first_seq": str(self.first_seq),
+            "last_seq": str(self.last_seq),
+            "last_chain_hash": self.last_chain_hash,
+            "restarts": self.restarts,
+        }
+
+
+@dataclass
+class RecordResult:
+    """The verdict on one record of a journal."""
+
+    index: int
+    line: int
+    state: str
+    profile_state: str = PROFILE_NONE
+    stream_id: Optional[str] = None
+    seq: Optional[int] = None
+    profile: Optional[str] = None
+
+    def to_dict(self) -> dict:
+        d: dict = {"index": self.index, "line": self.line}
+        if self.stream_id:
+            d["stream_id"] = self.stream_id
+        if self.seq is not None:
+            d["seq"] = str(self.seq)
+        d["state"] = self.state
+        if self.profile:
+            d["profile"] = self.profile
+        d["profile_state"] = self.profile_state
         return d
 
 
 @dataclass
 class Report:
     ok: bool = True
+    strict: bool = False
     records: int = 0
     errors: int = 0
     restarts: int = 0
@@ -114,24 +178,38 @@ class Report:
     signatures_verified: int = 0
     unsigned_records: int = 0
     notices: int = 0
+    states: dict = field(default_factory=lambda: {s: 0 for s in STATES})
+    profile_states: dict = field(default_factory=lambda: {s: 0 for s in PROFILE_STATES})
     streams: list = field(default_factory=list)
+    results: list = field(default_factory=list)
     findings: list = field(default_factory=list)
 
     def add(self, *findings: Finding) -> None:
         for f in findings:
+            if self.strict and f.cls in STRICT_CLASSES:
+                f.severity = ERROR
             self.findings.append(f)
             if f.severity == ERROR:
                 self.errors += 1
                 self.ok = False
             else:
                 self.notices += 1
-                if f.cls == RESTART:
-                    self.restarts += 1
+            if f.cls == RESTART:
+                self.restarts += 1
 
     def summary(self) -> str:
-        head = "OK: " if self.ok else "FAIL: "
-        s = f"{head}{self.records} record(s) in {len(self.streams)} stream(s)"
-        s += ", hash chain intact" if self.ok else f", {self.errors} error(s)"
+        head = ("OK" if self.ok else "FAIL") + (" (strict)" if self.strict else "")
+        s = f"{head}: {self.records} record(s) in {len(self.streams)} stream(s)"
+        if self.ok and not self.states[UNKNOWN]:
+            s += ", hash chain intact"
+        elif self.ok:
+            s += ", no invalid record"
+        else:
+            s += f", {self.errors} error(s)"
+        if self.states[UNKNOWN]:
+            s += f", {self.states[UNKNOWN]} unknown"
+        if self.states[OUTSIDE]:
+            s += f", {self.states[OUTSIDE]} outside scope"
         if self.restarts:
             s += f", {self.restarts} restart(s)"
         if self.signed_records:
@@ -143,6 +221,7 @@ class Report:
     def to_dict(self) -> dict:
         return {
             "ok": self.ok,
+            "strict": self.strict,
             "records": self.records,
             "errors": self.errors,
             "restarts": self.restarts,
@@ -150,7 +229,10 @@ class Report:
             "signatures_verified": self.signatures_verified,
             "unsigned_records": self.unsigned_records,
             "notices": self.notices,
+            "states": dict(self.states),
+            "profile_states": dict(self.profile_states),
             "streams": [s.to_dict() for s in self.streams],
+            "results": [r.to_dict() for r in self.results],
             "findings": [f.to_dict() for f in self.findings],
         }
 
@@ -198,12 +280,19 @@ def compute_hashes(record: dict) -> dict:
 def seal(record: dict, prev_hash: str) -> dict:
     """Link record to prev_hash and set content_hash and chain_hash in place.
 
-    For a restart record (``chain_restart`` true) ``anchor_hash`` must be set
-    and prev_hash must equal it. Any existing signature is dropped.
+    ``seq`` may be given as an int or a decimal string; it is written as the
+    canonical decimal string (SPEC.md section 3.1). For a restart record
+    (``chain_restart`` true) ``anchor_hash`` must be set and prev_hash must
+    equal it. Any existing signature is dropped.
     """
     record.setdefault("schema", SCHEMA)
     if record["schema"] != SCHEMA:
         raise ValueError(f"unsupported schema {record['schema']!r}")
+    seq = record.get("seq")
+    if isinstance(seq, int) and not isinstance(seq, bool) and 0 <= seq <= MAX_SEQ:
+        record["seq"] = str(seq)
+    elif not (isinstance(seq, str) and SEQ_RE.match(seq) and int(seq) <= MAX_SEQ):
+        raise ValueError(f"seq must be an integer or decimal string from 0 to {MAX_SEQ}, got {seq!r}")
     if "payload" not in record:
         raise ValueError("payload is required (use None for an empty payload)")
     if record.get("chain_restart"):
@@ -303,7 +392,8 @@ def _hex_key(s: str) -> bytes:
 # ---------------------------------------------------------------- validation
 
 _STRING_MEMBERS = ("schema", "stream_id", "prev_hash", "event_type", "content_hash",
-                   "chain_hash", "anchor_hash", "correlation_id", "job_id", "decision_id")
+                   "chain_hash", "anchor_hash", "correlation_id", "job_id", "decision_id",
+                   "profile")
 _NESTED_STRINGS = {
     "producer": ("kind", "id", "version"),
     "time": ("recorded_at", "occurred_at", "read_at", "source"),
@@ -316,6 +406,67 @@ _NESTED_STRINGS = {
 _NESTED_STRING_LISTS = {"actor": ("roles",), "redaction": ("fields",)}
 
 
+class _IntLiteral(int):
+    """An int parsed from JSON that remembers its literal text ("-0" vs "0")."""
+
+    literal: str
+
+    def __new__(cls, text: str):
+        obj = int.__new__(cls, text)
+        obj.literal = text
+        return obj
+
+
+def _reject_constant(name: str):
+    raise ValueError(f"{name} is not valid JSON")
+
+
+def _loads(raw: Union[str, bytes]) -> Any:
+    # Integer literals keep their text (seq "-0" is not "0"); NaN and
+    # Infinity, which the json module accepts by default, are rejected like
+    # every strict JSON parser does.
+    return json.loads(raw, parse_int=_IntLiteral, parse_constant=_reject_constant)
+
+
+@dataclass
+class SeqInfo:
+    present: bool = False  # the member exists (it may be null or malformed)
+    ok: bool = False       # usable: canonical decimal string or legacy integer, <= MAX_SEQ
+    legacy: bool = False   # usable, written as a JSON number (0.1 form)
+    value: int = 0
+
+
+def parse_seq(record: dict) -> SeqInfo:
+    """Read seq: a canonical decimal string, or the legacy integer form.
+
+    The value is taken from the literal text and compared as an integer of
+    arbitrary size; it must not exceed 2^64 - 1.
+    """
+    if "seq" not in record:
+        return SeqInfo()
+    v = record["seq"]
+    if isinstance(v, str):
+        text, legacy = v, False
+    elif isinstance(v, int) and not isinstance(v, bool):
+        text, legacy = getattr(v, "literal", str(v)), True
+    else:
+        return SeqInfo(present=True)
+    if not SEQ_RE.match(text):
+        return SeqInfo(present=True)
+    value = int(text)
+    if value > MAX_SEQ:
+        return SeqInfo(present=True)
+    return SeqInfo(present=True, ok=True, legacy=legacy, value=value)
+
+
+def foreign_schema(record: dict) -> Optional[str]:
+    """The schema name when the record names another format or major version."""
+    s = record.get("schema")
+    if isinstance(s, str) and s != SCHEMA and SCHEMA_ID_RE.match(s):
+        return s
+    return None
+
+
 def decode_problems(record: dict) -> list:
     """Type-level checks that decide whether a record is *decodable*.
 
@@ -325,18 +476,16 @@ def decode_problems(record: dict) -> list:
     the stream state. This mirrors a strict typed decoder, so that every
     implementation treats such lines the same way. ``null`` passes this gate
     (a typed decoder accepts it) and is rejected by validate_structure.
+    ``seq`` is not checked here: a malformed seq is a structural problem
+    (validate_structure) of an otherwise readable record.
     """
-    problems: list[str] = []
+    problems: list = []
     add = problems.append
     for k in sorted(set(record) - KNOWN_MEMBERS):
         add(f'unknown member "{k}"')
     for k in _STRING_MEMBERS:
         if k in record and record[k] is not None and not isinstance(record[k], str):
             add(f"{k} must be a string")
-    if "seq" in record and record["seq"] is not None:
-        seq = record["seq"]
-        if isinstance(seq, bool) or not isinstance(seq, int) or seq < 0:
-            add("seq must be a non-negative integer")
     if "chain_restart" in record and record["chain_restart"] is not None and not isinstance(record["chain_restart"], bool):
         add("chain_restart must be a boolean")
     for name, allowed in _OBJECT_MEMBERS.items():
@@ -366,9 +515,11 @@ def _nonempty(v: Any) -> bool:
     return isinstance(v, str) and v != ""
 
 
-def validate_structure(record: dict) -> list:
-    """Structural checks (SPEC.md section 6, step 1). Returns messages."""
-    problems: list[str] = []
+def validate_structure(record: dict, seq: Optional[SeqInfo] = None) -> list:
+    """Structural checks (SPEC.md section 6.3, step 3). Returns messages."""
+    if seq is None:
+        seq = parse_seq(record)
+    problems: list = []
     add = problems.append
     for k in REQUIRED_MEMBERS:
         if k not in record:
@@ -397,9 +548,10 @@ def validate_structure(record: dict) -> list:
             add("producer.version must not be empty")
     if "stream_id" in record and not _nonempty(record["stream_id"]):
         add("stream_id must not be empty")
-    seq = record.get("seq")
-    if "seq" in record and seq is not None and (isinstance(seq, bool) or not isinstance(seq, int) or seq < 0):
-        add("seq must be a non-negative integer")
+    if seq.present and not seq.ok and record.get("seq") is not None:
+        add(f'seq must be a decimal string from "0" to "{MAX_SEQ}" without sign, leading zeros or fraction, got {record["seq"]!r}')
+    if "profile" in record and record["profile"] is not None and not (_is_str(record["profile"]) and PROFILE_RE.match(record["profile"])):
+        add(f"profile {record['profile']!r} is not of the form <name>/<major>")
     if "prev_hash" in record and not (_is_str(record["prev_hash"]) and HASH_RE.match(record["prev_hash"])):
         add("prev_hash does not match sha256:<64 hex>")
     if "event_type" in record and not (_is_str(record["event_type"]) and EVENT_TYPE_RE.match(record["event_type"])):
@@ -488,7 +640,7 @@ def validate_structure(record: dict) -> list:
 
 def _parse_record(raw: Union[str, bytes]):
     try:
-        value = json.loads(raw)
+        value = _loads(raw)
     except ValueError as exc:
         return None, f"invalid JSON: {exc}"
     if not isinstance(value, dict):
@@ -496,46 +648,121 @@ def _parse_record(raw: Union[str, bytes]):
     return value, None
 
 
-def verify_record(raw: Union[str, bytes, dict]):
-    """Check one record on its own: structure and both hashes.
+@dataclass
+class RecordCheck:
+    """The outcome of checking one record on its own (no stream around it).
 
-    Returns ``(record, findings)``; record is None when the input could not
-    be parsed as a JSON object or is not decodable (see decode_problems).
-    Findings have index and line 0.
+    ``record`` is None when the input is not a decodable record of this
+    contract (not JSON, not an object, not decodable, or outside the scope).
+    ``state`` is valid, invalid or outside_scope; unknown needs the stream.
     """
-    findings: list[Finding] = []
+
+    record: Optional[dict]
+    findings: list
+    state: str
+    profile: Optional[str] = None
+    profile_state: str = PROFILE_NONE
+    seq: SeqInfo = field(default_factory=SeqInfo)
+    restart: bool = False
+
+    @property
+    def positioned(self) -> bool:
+        """A decoded record with a non-empty stream_id and a usable seq."""
+        return self.record is not None and _nonempty(self.record.get("stream_id")) and self.seq.ok
+
+
+def _schema_finding(problems: list) -> Finding:
+    return Finding(0, 0, SCHEMA_INVALID, ERROR, "; ".join(problems))
+
+
+def _state_of(findings: Iterable[Finding]) -> str:
+    state = VALID
+    for f in findings:
+        if f.cls in ERROR_CLASSES:
+            return INVALID
+        if f.cls == SEQ_GAP:
+            state = UNKNOWN
+    return state
+
+
+def _check_profile(record: dict):
+    """Return (profile, profile_state, finding or None) for a decoded record."""
+    if "profile" not in record:
+        return None, PROFILE_NONE, None
+    pid = record["profile"]
+    if not (_is_str(pid) and PROFILE_RE.match(pid)):
+        return (pid if _is_str(pid) else None), INVALID, None
+    known, problems = _profiles.REGISTRY.validate(pid, record.get("payload"), "payload" in record)
+    if not known:
+        listed = ", ".join(_profiles.profiles()) or "none"
+        return pid, OUTSIDE, Finding(0, 0, PROFILE_UNKNOWN, NOTICE,
+                                     f"profile {pid} is not known to this verifier (known: {listed}); "
+                                     "the payload was not checked against a profile")
+    if problems:
+        return pid, INVALID, Finding(0, 0, PROFILE_INVALID, ERROR,
+                                     f"payload does not match profile {pid}: " + "; ".join(problems))
+    return pid, VALID, None
+
+
+def check_record(raw: Union[str, bytes, dict]) -> RecordCheck:
+    """Check one record on its own: scope, decoding, structure, hashes, profile."""
     if isinstance(raw, dict):
         record = raw
     else:
         record, err = _parse_record(raw)
         if record is None:
-            return None, [Finding(0, 0, SCHEMA_INVALID, ERROR, err)]
+            return RecordCheck(None, [_schema_finding([err])], INVALID)
+    name = foreign_schema(record)
+    if name is not None:
+        return RecordCheck(None, [Finding(0, 0, OUTSIDE_SCOPE, NOTICE,
+                                          f'schema "{name}" is not {SCHEMA}; the record is not checked '
+                                          "and does not take part in any chain")], OUTSIDE)
+    seq = parse_seq(record)
     undecodable = decode_problems(record)
     if undecodable:
-        for msg in undecodable:
-            findings.append(Finding(0, 0, SCHEMA_INVALID, ERROR, msg))
-        for k in REQUIRED_MEMBERS:
-            if k not in record:
-                findings.append(Finding(0, 0, SCHEMA_INVALID, ERROR, f'missing required member "{k}"'))
-        return None, findings
-    for msg in validate_structure(record):
-        findings.append(Finding(0, 0, SCHEMA_INVALID, ERROR, msg))
+        missing = [f'missing required member "{k}"' for k in REQUIRED_MEMBERS if k not in record]
+        return RecordCheck(None, [_schema_finding(undecodable + missing)], INVALID, seq=seq)
+    findings: list = []
+    problems = validate_structure(record, seq)
+    h = None
     try:
         h = compute_hashes(record)
     except (TypeError, ValueError) as exc:
-        findings.append(Finding(0, 0, SCHEMA_INVALID, ERROR, str(exc)))
-        return record, findings
-    if h["content_hash"] != record.get("content_hash"):
-        findings.append(Finding(0, 0, HASH_MISMATCH, ERROR,
-                                f"content_hash mismatch: recorded {record.get('content_hash')}, computed {h['content_hash']}"))
-    if h["chain_hash"] != record.get("chain_hash"):
-        findings.append(Finding(0, 0, HASH_MISMATCH, ERROR,
-                                f"chain_hash mismatch: recorded {record.get('chain_hash')}, computed {h['chain_hash']}"))
-    n = unsafe_integers(record["payload"])
-    if n:
-        findings.append(Finding(0, 0, NUMBER_PRECISION, NOTICE,
-                                f"payload contains {n} integer(s) outside +/-2^53; JCS renders them as IEEE-754 doubles, transport such values as strings"))
-    return record, findings
+        problems.append(str(exc))
+    if problems:
+        findings.append(_schema_finding(problems))
+    if h is not None:
+        if h["content_hash"] != record.get("content_hash"):
+            findings.append(Finding(0, 0, HASH_MISMATCH, ERROR,
+                                    f"content_hash mismatch: recorded {record.get('content_hash')}, computed {h['content_hash']}"))
+        if h["chain_hash"] != record.get("chain_hash"):
+            findings.append(Finding(0, 0, HASH_MISMATCH, ERROR,
+                                    f"chain_hash mismatch: recorded {record.get('chain_hash')}, computed {h['chain_hash']}"))
+        n = unsafe_integers(record["payload"])
+        if n:
+            findings.append(Finding(0, 0, NUMBER_PRECISION, NOTICE,
+                                    f"payload contains {n} integer(s) outside +/-2^53; JCS renders them as IEEE-754 doubles, transport such values as strings"))
+    if seq.ok and seq.legacy:
+        findings.append(Finding(0, 0, LEGACY_INTEGER_SEQ, NOTICE,
+                                f'seq {seq.value} is a JSON number; write it as the string "{seq.value}" '
+                                "(accepted during 0.x, schema_invalid from 1.0)"))
+    profile, profile_state, pf = _check_profile(record)
+    if pf is not None:
+        findings.append(pf)
+    restart = record.get("chain_restart") is True and "anchor_hash" in record
+    return RecordCheck(record, findings, _state_of(findings), profile, profile_state, seq, restart)
+
+
+def verify_record(raw: Union[str, bytes, dict]):
+    """Check one record on its own: structure, hashes and profile.
+
+    Returns ``(record, findings)``; record is None when the input could not
+    be parsed as a JSON object, is not decodable (see decode_problems) or is
+    outside the scope of this verifier. Findings have index and line 0.
+    ``check_record`` returns the record's state as well.
+    """
+    c = check_record(raw)
+    return c.record, c.findings
 
 
 def unsafe_integers(value: Any) -> int:
@@ -555,92 +782,108 @@ def unsafe_integers(value: Any) -> int:
     return 0
 
 
-def _stream_id(record: dict) -> str:
-    sid = record.get("stream_id")
-    return sid if isinstance(sid, str) else ""
+def _seq_behind(seq: int, last: int) -> str:
+    if seq == last:
+        return f"seq {seq} repeats the seq of the previous record"
+    return f"seq {seq} goes backwards (previous seq {last})"
 
 
-def _seq(record: dict) -> Optional[int]:
-    s = record.get("seq")
-    return s if isinstance(s, int) and not isinstance(s, bool) else None
-
-
-def _check_chain(streams: dict, record: dict, index: int, line: int) -> list:
-    sid = _stream_id(record)
-    seq = _seq(record)
-    seq_num = seq if seq is not None else 0
-    st = streams.get(sid)
-    if st is None:
-        st = StreamSummary(stream_id=sid, first_seq=seq_num)
-        streams[sid] = st
-    out: list[Finding] = []
+def _check_chain(st: StreamSummary, c: RecordCheck) -> list:
+    """Judge a positioned record against its stream (SPEC.md section 6.3, step 5)."""
+    record = c.record
+    seq = c.seq.value
+    out: list = []
 
     def f(cls: str, sev: str, msg: str) -> Finding:
-        return Finding(index, line, cls, sev, msg, sid, seq)
+        return Finding(0, 0, cls, sev, msg)
 
+    last = st.last_chain_hash
     prev_hash = record.get("prev_hash")
-    if record.get("chain_restart") is True and "anchor_hash" in record:
+    if c.restart:
         anchor = record["anchor_hash"]
-        msg = f"chain restart at seq {seq_num}, anchor {anchor}"
+        msg = f"chain restart at seq {seq}, anchor {anchor}"
         if not st.seen and anchor != GENESIS_HASH:
             msg += " (previous segment not in this journal)"
         if st.seen and anchor == GENESIS_HASH:
             msg += " (anchor unknown: genesis)"
         out.append(f(RESTART, NOTICE, msg))
         st.restarts += 1
-        if st.seen and anchor != GENESIS_HASH and anchor != st.last_chain_hash:
+        if st.seen and anchor != GENESIS_HASH and anchor != last:
             out.append(f(CHAIN_BREAK, ERROR,
-                         f"anchor_hash {anchor} does not match the last chain_hash {st.last_chain_hash} of the previous segment"))
-    elif not st.seen:
-        if prev_hash != GENESIS_HASH:
-            out.append(f(CHAIN_BREAK, ERROR,
-                         f"first record of stream has prev_hash {prev_hash} instead of genesis and is not marked chain_restart"))
-        elif seq_num != 0:
-            out.append(f(SEQ_GAP, ERROR, f"first record of stream has seq {seq_num}, expected 0"))
+                         f"anchor_hash {anchor} does not match the last chain_hash {last} of the previous segment"))
+        elif st.seen and st.last_unknown and anchor == last:
+            out.append(f(AFTER_UNKNOWN, NOTICE, AFTER_UNKNOWN_MESSAGE))
     else:
-        if prev_hash != st.last_chain_hash:
+        linked = prev_hash == (last if st.seen else GENESIS_HASH)
+        expected = st.last_seq + 1 if st.seen else 0
+        pos = (seq > expected) - (seq < expected)  # -1 behind, 0 next, +1 ahead
+        if linked and pos == 0:
+            if st.seen and st.last_unknown:
+                out.append(f(AFTER_UNKNOWN, NOTICE, AFTER_UNKNOWN_MESSAGE))
+        elif linked and pos > 0 and not st.seen:
+            out.append(f(SEQ_MISMATCH, ERROR, f"first record of stream links to genesis but has seq {seq}, expected 0"))
+        elif linked and pos > 0:
+            out.append(f(SEQ_MISMATCH, ERROR,
+                         f"seq {seq}, expected {expected}: prev_hash links to the record with seq {st.last_seq}, "
+                         "so no record can be missing in between"))
+        elif linked:
+            out.append(f(SEQ_MISMATCH, ERROR, _seq_behind(seq, st.last_seq)))
+        elif pos == 0 and not st.seen:
             out.append(f(CHAIN_BREAK, ERROR,
-                         f"prev_hash {prev_hash} does not match previous chain_hash {st.last_chain_hash}"))
-        if seq_num != st.last_seq + 1:
-            out.append(f(SEQ_GAP, ERROR, f"seq {seq_num}, expected {st.last_seq + 1}"))
+                         f"first record of stream has seq 0 but prev_hash {prev_hash} instead of genesis "
+                         "and is not marked chain_restart"))
+        elif pos == 0:
+            out.append(f(CHAIN_BREAK, ERROR, f"prev_hash {prev_hash} does not match previous chain_hash {last}"))
+        elif pos > 0 and not st.seen:
+            out.append(f(SEQ_GAP, NOTICE,
+                         f"first record of stream has seq {seq} and prev_hash {prev_hash}: "
+                         "its predecessor is not in this journal"))
+        elif pos > 0:
+            out.append(f(SEQ_GAP, NOTICE,
+                         f"seq {seq} after seq {st.last_seq}, and prev_hash {prev_hash} does not link to the "
+                         "last checked record: its predecessor is not in this journal"))
+        else:
+            out.append(f(CHAIN_BREAK, ERROR, f"prev_hash {prev_hash} does not match previous chain_hash {last}"))
+            out.append(f(SEQ_MISMATCH, ERROR, _seq_behind(seq, st.last_seq)))
     st.seen = True
     st.records += 1
-    st.last_seq = seq_num
+    st.last_seq = seq
     st.last_chain_hash = record.get("chain_hash") if isinstance(record.get("chain_hash"), str) else ""
     return out
 
 
-def _check_signature(report: Report, record: dict, index: int, line: int,
-                     public_key: Optional[bytes], require: bool) -> list:
-    sid, seq = _stream_id(record), _seq(record)
+def _check_signature(report: Report, record: dict, public_key: Optional[bytes], require: bool) -> list:
     sig = record.get("signature")
     if sig is None:
         if public_key is not None:
             report.unsigned_records += 1
             if require:
-                return [Finding(index, line, SIGNATURE_INVALID, ERROR, "record is not signed", sid, seq)]
+                return [Finding(0, 0, SIGNATURE_INVALID, ERROR, "record is not signed")]
         return []
     report.signed_records += 1
     if public_key is None:
         return []
     err = verify_signature(public_key, str(record.get("chain_hash", "")), sig)
     if err:
-        return [Finding(index, line, SIGNATURE_INVALID, ERROR, err, sid, seq)]
+        return [Finding(0, 0, SIGNATURE_INVALID, ERROR, err)]
     report.signatures_verified += 1
     return []
 
 
 def verify_stream(lines: Union[TextIO, Iterable[Union[str, bytes]]],
                   public_key: Optional[bytes] = None,
-                  require_signatures: bool = False) -> Report:
+                  require_signatures: bool = False,
+                  strict: bool = False) -> Report:
     """Verify a JSON Lines journal (file object or iterable of lines).
 
     Blank lines are skipped. Verification continues after an error so that
     the report lists every problem; chain state advances with the record's
-    declared chain_hash.
+    declared chain_hash. Every record gets a state (valid, invalid, unknown,
+    outside_scope) and a profile state. With ``strict`` the journal verifies
+    only when every record is valid and every profile was checked.
     """
-    report = Report()
-    streams: dict[str, StreamSummary] = {}
+    report = Report(strict=strict)
+    streams: dict = {}
     index = -1
     for line_no, raw in enumerate(lines, start=1):
         if isinstance(raw, bytes):
@@ -649,15 +892,32 @@ def verify_stream(lines: Union[TextIO, Iterable[Union[str, bytes]]],
             continue
         index += 1
         report.records += 1
-        record, findings = verify_record(raw)
+        c = check_record(raw)
+        res = RecordResult(index, line_no, c.state, c.profile_state, profile=c.profile)
+        findings = list(c.findings)
+        if c.record is not None:
+            sid = c.record.get("stream_id")
+            res.stream_id = sid if _nonempty(sid) else None
+            res.seq = c.seq.value if c.seq.ok else None
+            if c.positioned:
+                st = streams.get(sid)
+                if st is None:
+                    st = StreamSummary(stream_id=sid, first_seq=c.seq.value)
+                    streams[sid] = st
+                findings += _check_chain(st, c)
+            findings += _check_signature(report, c.record, public_key, require_signatures)
+        else:
+            res.profile = None
+        if c.state != OUTSIDE:
+            res.state = _state_of(findings)
+        if c.positioned:
+            streams[c.record["stream_id"]].last_unknown = res.state == UNKNOWN
         for fnd in findings:
             fnd.index, fnd.line = index, line_no
-            if record is not None:
-                fnd.stream_id, fnd.seq = _stream_id(record), _seq(record)
+            fnd.stream_id, fnd.seq = res.stream_id, res.seq
         report.add(*findings)
-        if record is None:
-            continue
-        report.add(*_check_chain(streams, record, index, line_no))
-        report.add(*_check_signature(report, record, index, line_no, public_key, require_signatures))
+        report.results.append(res)
+        report.states[res.state] += 1
+        report.profile_states[res.profile_state] += 1
     report.streams = [streams[k] for k in sorted(streams)]
     return report

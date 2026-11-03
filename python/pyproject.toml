@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "trail-evidence"
 version = "0.1.0"
-description = "Trail Evidence Record v1: seal and verify hash-chained JSON evidence records (reference implementation, standard library only)"
+description = "Trail Evidence Record (trail.evidence/1, format 0.2): seal and verify hash-chained JSON evidence records with profiles (reference implementation, standard library only)"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
@@ -40,3 +40,7 @@ trail-evidence-py = "trail_evidence.__main__:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["trail_evidence*"]
+
+[tool.setuptools.package-data]
+# The profile registry, copied from profiles/ by scripts/profiles.py --write.
+trail_evidence = ["profiles/*/*.schema.json"]

@@ -1,8 +1,9 @@
 name: "trail-evidence verify"
 description: >-
   Verify Trail Evidence journals (trail.evidence/1): recomputes content and
-  chain hashes, follows prev_hash links and seq per stream, reports restarts
-  and, with a public key, checks Ed25519 signatures. Nothing leaves the runner.
+  chain hashes, follows prev_hash links and seq per stream, checks profiles,
+  gives every record a state (valid, invalid, unknown, outside_scope) and,
+  with a public key, checks Ed25519 signatures. Nothing leaves the runner.
 author: Florian Przybylak
 
 branding:
@@ -27,10 +28,18 @@ inputs:
       "true" to treat unsigned records as signature_invalid. Needs pubkey.
     required: false
     default: "false"
+  strict:
+    description: >-
+      "true" to fail also on records in state unknown (predecessor not in the
+      journal) or outside_scope (another format or major version), and on
+      profiles the verifier does not know. Without it those are counted and
+      reported, and only invalid records fail the step.
+    required: false
+    default: "false"
   version:
     description: >-
-      Version of the verifier to run, as a module version (v0.1.0). Defaults to
-      the version this action was referenced with (uses: ...@v0.1.0). When the
+      Version of the verifier to run, as a module version (v0.2.0). Defaults to
+      the version this action was referenced with (uses: ...@v0.2.0). When the
       action runs from a checkout (uses: ./) the verifier is built from it.
     required: false
     default: ""
@@ -118,6 +127,7 @@ runs:
         JOURNAL: ${{ inputs.journal }}
         PUBKEY: ${{ inputs.pubkey }}
         REQUIRE_SIGNATURES: ${{ inputs.require-signatures }}
+        STRICT: ${{ inputs.strict }}
       run: |
         set -euo pipefail
         flags=()
@@ -126,6 +136,7 @@ runs:
           if [ -z "$PUBKEY" ]; then echo "require-signatures needs pubkey" >&2; exit 2; fi
           flags+=(--require-signatures)
         fi
+        if [ "$STRICT" = "true" ]; then flags+=(--strict); fi
 
         shopt -s nullglob
         shopt -s globstar 2>/dev/null || true   # bash 3.2 (macOS /bin/bash) has no **
@@ -142,8 +153,9 @@ runs:
         {
           echo "### trail-evidence verify"
           echo
-          echo "| Journal | Verdict | Records | Errors | Notices | Signed |"
-          echo "|---|---|---:|---:|---:|---:|"
+          if [ "$STRICT" = "true" ]; then echo "Strict: unknown and outside_scope records and unknown profiles fail."; echo; fi
+          echo "| Journal | Verdict | Records | Invalid | Unknown | Outside scope | Errors | Notices | Signed |"
+          echo "|---|---|---:|---:|---:|---:|---:|---:|---:|"
         } >> "$GITHUB_STEP_SUMMARY"
         for f in "${files[@]}"; do
           set +e
@@ -155,11 +167,11 @@ runs:
             exit 2
           fi
           # tr: jq.exe on Windows ends lines with CRLF
-          read -r ok records errors notices signed < <(jq -r '[.ok, .records, .errors, .notices, .signed_records] | @tsv' "$RUNNER_TEMP/trail-evidence-report.json" | tr -d '\r')
+          read -r ok records errors notices signed invalid unknown outside < <(jq -r '[.ok, .records, .errors, .notices, .signed_records, .states.invalid, .states.unknown, .states.outside_scope] | @tsv' "$RUNNER_TEMP/trail-evidence-report.json" | tr -d '\r')
           total_records=$((total_records + records))
           total_errors=$((total_errors + errors))
           if [ "$ok" = "true" ]; then verdict=ok; else verdict=fail; failed=1; fi
-          echo "| \`$f\` | $verdict | $records | $errors | $notices | $signed |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| \`$f\` | $verdict | $records | $invalid | $unknown | $outside | $errors | $notices | $signed |" >> "$GITHUB_STEP_SUMMARY"
           "$BIN" verify "$f" ${flags[@]+"${flags[@]}"} | sed "s|^|$f: |" || true
           jq -r --arg f "$f" '.findings[] | select(.severity == "error") | "::error file=\($f),line=\(.line)::\(.class): \(.message)"' "$RUNNER_TEMP/trail-evidence-report.json" | tr -d '\r'
         done

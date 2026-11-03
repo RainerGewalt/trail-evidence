@@ -4,9 +4,14 @@
 //   node web/test/run.mjs                 run all checks
 //   node web/test/run.mjs report <file.jsonl> [--pubkey <hex|file>] [--require-signatures]
 //                                         print the JSON report (exit 0 ok, 1 fail, 2 usage)
+//   node web/test/run.mjs verify <file.jsonl> [...] --json
+//                                         same as report, with the CLI flags of Go and Python
+//   node web/test/run.mjs hash <record.json>
+//                                         recompute the hashes of one record, like `trail-evidence hash`
 //
 // The report mode is what scripts/crosscheck.sh uses to compare this
-// implementation with Go and Python.
+// implementation with Go and Python; verify and hash are the interface
+// scripts/conformance.sh expects from any verifier.
 
 import { createRequire } from "node:module";
 import { readFileSync, readdirSync } from "node:fs";
@@ -55,6 +60,8 @@ async function reportMode(args) {
       pubkey = a.slice("--pubkey=".length);
     } else if (a === "--require-signatures") {
       requireSignatures = true;
+    } else if (a === "--json") {
+      // the report is always JSON
     } else if (a.startsWith("-")) {
       console.error(`unknown flag ${a}`);
       return 2;
@@ -89,6 +96,43 @@ async function reportMode(args) {
   }
   process.stdout.write(JSON.stringify(te.reportToJSON(report), null, 2) + "\n");
   return report.ok ? 0 : 1;
+}
+
+// hash mode: the output members of `trail-evidence hash` (Go) and
+// `python -m trail_evidence hash`.
+async function hashMode(args) {
+  if (args.length !== 1) {
+    console.error("usage: run.mjs hash <record.json>");
+    return 2;
+  }
+  let raw;
+  let parsed;
+  try {
+    raw = read(args[0]);
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    console.error(err.message);
+    return 2;
+  }
+  let h;
+  try {
+    h = await te.computeHashes(parsed);
+  } catch (err) {
+    console.error(err.message);
+    return 2;
+  }
+  const { record, findings } = await te.verifyRecord(raw);
+  const out = { payload_jcs: h.payload_jcs, content_hash: h.content_hash, core_jcs: h.core_jcs, chain_hash: h.chain_hash };
+  if (record !== null) {
+    out.recorded_content_hash = parsed.content_hash;
+    out.recorded_chain_hash = parsed.chain_hash;
+    out.matches = parsed.content_hash === h.content_hash && parsed.chain_hash === h.chain_hash;
+  }
+  if (findings.length) {
+    out.findings = findings.map((f) => ({ index: f.index, line: f.line, class: f.class, severity: f.severity, message: f.message }));
+  }
+  process.stdout.write(JSON.stringify(out, null, 2) + "\n");
+  return out.matches === false ? 1 : 0;
 }
 
 // ---------------------------------------------------------------- test helpers
@@ -327,8 +371,11 @@ async function testSchemaGate() {
 
 async function main() {
   const args = process.argv.slice(2);
-  if (args[0] === "report") {
+  if (args[0] === "report" || args[0] === "verify") {
     process.exit(await reportMode(args.slice(1)));
+  }
+  if (args[0] === "hash") {
+    process.exit(await hashMode(args.slice(1)));
   }
   console.log(`node ${process.versions.node}, web/verify.js`);
   await testJcs();

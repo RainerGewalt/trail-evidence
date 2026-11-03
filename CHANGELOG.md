@@ -6,6 +6,13 @@ tagged. Until then the record format is a draft and may change.
 
 ## Unreleased
 
+### Changed
+
+- README states the released version, the install paths and which
+  producers emit the format today.
+- The PyPI upload in the release workflow is blocking: a failed upload fails
+  the release run. 0.2.0 is on PyPI since 2026-11-03.
+
 ### Added
 
 - Reason code `source.subscription_stalled` (error), additive: a source

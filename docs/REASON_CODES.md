@@ -108,10 +108,14 @@ Source bridges (TrailSource): address space, value quality, connection. Producer
 | `source.inventory_initial` | info | First complete browse of the source's address space after the bridge started. | `source.inventory.changed` with `{"inventory_hash":"sha256:…","count":2}` |
 | `source.node_added` | info | A node appeared in the address space; the inventory fingerprint changed. | `source.inventory.changed` with `{"inventory_hash":"sha256:…","added":["ns=2;s=Line1.Pressure"]}` |
 | `source.node_removed` | warning | A node that values were read from disappeared from the address space; later records cannot refer to it. | `source.inventory.changed` with `{"inventory_hash":"sha256:…","removed":["ns=2;s=Line1.Speed"]}` |
+| `source.node_changed` | warning | An attribute of a node that stays in the address space changed (data type, browse name or path, access level); values read before and after may not be comparable. | `source.inventory.changed` with `{"inventory_hash":"sha256:…","changed":[{"node_id":"ns=2;s=Line1.Speed","field":"data_type","old":"float32","new":"float64"}]}` |
 | `source.quality_uncertain` | warning | The source delivered the value with quality uncertain (stale, sensor not calibrated, substituted). | `source.value.observed` with `{"entity_key":"line1/temp","value":"21.5","quality":"uncertain"}` |
 | `source.quality_bad` | error | The source delivered the value with quality bad; the value must not be used as a measurement. | `source.value.observed` with `{"entity_key":"line1/temp","value":"0","quality":"bad"}` |
 | `source.connection_lost` | error | The bridge lost the connection to the source; values that changed until it reconnects are not observed. | `source.connection.changed` with `{"source_address":"opc.tcp://plc-7:4840","state":"disconnected"}` |
 | `source.connection_restored` | info | The bridge reconnected to the source and resumed reading. | `source.connection.changed` with `{"source_address":"opc.tcp://plc-7:4840","state":"connected","down_ms":4200}` |
+| `source.connection_established` | info | The bridge opened its first session to the source since it started and began reading. A session after a lost or failed connection is source.connection_restored instead. | `source.connection.changed` with `{"source_address":"opc.tcp://plc-7:4840","state":"connected"}` |
+| `source.connection_failed` | error | An attempt to open a session failed (unreachable, refused, certificate or identity rejected); nothing is read until a session is established. Recorded once per outage, not per retry. | `source.connection.changed` with `{"source_address":"opc.tcp://plc-7:4840","state":"disconnected","error":"dial tcp 10.0.0.7:4840: connect: connection refused"}` |
+| `source.connection_closed` | info | The bridge closed the session on purpose, usually because it is stopping. Not a failure; values that change afterwards are not observed until it reads again. | `source.connection.changed` with `{"source_address":"opc.tcp://plc-7:4840","state":"disconnected","detail":"bridge stopping"}` |
 | `source.queue_overflow` | error | Values arrived faster than the bridge could seal them and were dropped; the payload counts them. | `source.value.dropped` with `{"entity_key":"line1/speed","dropped":37}` |
 
 ### `ml.*`
@@ -136,11 +140,12 @@ Conditions every producer can hit: gaps, restarts, configuration changes, clock 
 | `common.gap` | error | The producer knows that events between two points were not recorded (outage, dropped values, lost buffer) and says so. The journal itself stays intact; compare the finding class seq_gap, which means records are missing from the journal. | `source.data.gap` with `{"from":"2026-11-02T07:10:00.000Z","to":"2026-11-02T07:14:12.000Z","cause":"source.connection_lost"}` |
 | `common.restart` | info | The producer process restarted and continued the stream with a new segment anchored at the last chain_hash it knew. Belongs on the record with chain_restart: true. | `transfer.worker.restarted` with `{"previous_version":"0.3.0","version":"0.3.1"}` |
 | `common.state_lost` | warning | The producer restarted without knowing its previous chain_hash (storage lost or replaced) and anchored the new segment at genesis. | `source.bridge.restarted` with `{"cause":"state directory empty"}` |
+| `common.will_published` | warning | The broker published the producer's MQTT Last Will: the producer's broker session ended without an orderly disconnect, and its state is unknown from then on. Usually carried by the will message on a health or status topic rather than by a sealed record, because the producer could not write one at that moment. | `source.bridge.unreachable` with `{"status":"down","producer_id":"bridge-01"}` |
 | `common.config_changed` | info | The producer loaded a new configuration or policy version; later records name it in policy. | `transfer.policy.changed` with `{"policy_id":"archive-policy","from_version":"6","to_version":"7","to_hash":"sha256:…"}` |
 | `common.time_uncertain` | warning | The producer cannot vouch for its clock (no NTP sync, time reconstructed from seq); recorded_at may be off. Records written meanwhile carry time.source unknown or seq-reconstructed. | `source.clock.changed` with `{"time_source":"unknown","last_sync":"2026-11-01T22:00:00.000Z"}` |
 | `common.clock_step` | warning | The wall clock jumped forwards or backwards by more than the producer's tolerance; recorded_at values around the step are not monotonic. | `transfer.clock.stepped` with `{"step_ms":-3500,"time_source":"ntp"}` |
 
-38 codes: 8 info, 18 warning, 12 error.
+43 codes: 10 info, 20 warning, 13 error.
 
 <!-- END GENERATED -->
 
@@ -156,7 +161,11 @@ that authorizer gives an allow no reason, hence the generic `mqtt.allowed`.
 `examples/broker-export.jsonl` uses `mqtt.allowed` and
 `mqtt.acl_role_not_in_topic_scope`. `source.*` and
 `ml.*` follow the members of the example journals (`quality`,
-`inventory_hash`, `decision.threshold`, `data_fingerprint`). `common.*`
+`inventory_hash`, `decision.threshold`, `data_fingerprint`);
+`source.connection_established`, `source.connection_failed`,
+`source.connection_closed` and `source.node_changed` follow the connection
+records and the inventory diff of TrailSource. `common.*`
 mirrors the record members and finding classes in `SPEC.md` that describe
-the same conditions. Each entry's `derived_from` in the JSON names its
+the same conditions; `common.will_published` names the MQTT Last Will that
+producers publishing over MQTT leave on their health topic. Each entry's `derived_from` in the JSON names its
 source.

@@ -6,7 +6,14 @@ tagged. Until then the record format is a draft and may change.
 
 ## Unreleased
 
-Nothing yet.
+### Added
+
+- Reason codes, additive: `source.connection_established`,
+  `source.connection_failed`, `source.connection_closed`,
+  `source.node_changed` and `common.will_published`, taken from the
+  connection records, the inventory diff and the health topic of
+  TrailSource. The catalog now has 43 codes; no existing code changed its
+  name or meaning.
 
 ## 0.1.0 - 2026-11-03
 

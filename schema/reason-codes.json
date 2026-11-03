@@ -472,6 +472,31 @@
       "derived_from": "source.inventory.changed (SPEC.md 3.1)"
     },
     {
+      "code": "source.node_changed",
+      "namespace": "source",
+      "severity": "warning",
+      "meaning": "An attribute of a node that stays in the address space changed (data type, browse name or path, access level); values read before and after may not be comparable.",
+      "producer_kinds": [
+        "source-bridge"
+      ],
+      "example": {
+        "event_type": "source.inventory.changed",
+        "payload": {
+          "inventory_hash": "sha256:…",
+          "changed": [
+            {
+              "node_id": "ns=2;s=Line1.Speed",
+              "field": "data_type",
+              "old": "float32",
+              "new": "float64"
+            }
+          ],
+          "reason_code": "source.node_changed"
+        }
+      },
+      "derived_from": "source.inventory.changed (SPEC.md 3.1); TrailSource inventory diff, member changed"
+    },
+    {
       "code": "source.quality_uncertain",
       "namespace": "source",
       "severity": "warning",
@@ -545,6 +570,62 @@
         }
       },
       "derived_from": "examples/source-bridge.jsonl (context.source_status)"
+    },
+    {
+      "code": "source.connection_established",
+      "namespace": "source",
+      "severity": "info",
+      "meaning": "The bridge opened its first session to the source since it started and began reading. A session after a lost or failed connection is source.connection_restored instead.",
+      "producer_kinds": [
+        "source-bridge"
+      ],
+      "example": {
+        "event_type": "source.connection.changed",
+        "payload": {
+          "source_address": "opc.tcp://plc-7:4840",
+          "state": "connected",
+          "reason_code": "source.connection_established"
+        }
+      },
+      "derived_from": "TrailSource source.connection.changed, first session of a process"
+    },
+    {
+      "code": "source.connection_failed",
+      "namespace": "source",
+      "severity": "error",
+      "meaning": "An attempt to open a session failed (unreachable, refused, certificate or identity rejected); nothing is read until a session is established. Recorded once per outage, not per retry.",
+      "producer_kinds": [
+        "source-bridge"
+      ],
+      "example": {
+        "event_type": "source.connection.changed",
+        "payload": {
+          "source_address": "opc.tcp://plc-7:4840",
+          "state": "disconnected",
+          "error": "dial tcp 10.0.0.7:4840: connect: connection refused",
+          "reason_code": "source.connection_failed"
+        }
+      },
+      "derived_from": "TrailSource source.connection.changed, start against an unreachable source"
+    },
+    {
+      "code": "source.connection_closed",
+      "namespace": "source",
+      "severity": "info",
+      "meaning": "The bridge closed the session on purpose, usually because it is stopping. Not a failure; values that change afterwards are not observed until it reads again.",
+      "producer_kinds": [
+        "source-bridge"
+      ],
+      "example": {
+        "event_type": "source.connection.changed",
+        "payload": {
+          "source_address": "opc.tcp://plc-7:4840",
+          "state": "disconnected",
+          "detail": "bridge stopping",
+          "reason_code": "source.connection_closed"
+        }
+      },
+      "derived_from": "TrailSource source.connection.changed, orderly shutdown"
     },
     {
       "code": "source.queue_overflow",
@@ -766,6 +847,29 @@
         "chain_restart",
         "anchor_hash"
       ]
+    },
+    {
+      "code": "common.will_published",
+      "namespace": "common",
+      "severity": "warning",
+      "meaning": "The broker published the producer's MQTT Last Will: the producer's broker session ended without an orderly disconnect, and its state is unknown from then on. Usually carried by the will message on a health or status topic rather than by a sealed record, because the producer could not write one at that moment.",
+      "producer_kinds": [
+        "broker",
+        "transfer-worker",
+        "source-bridge",
+        "ml-pipeline",
+        "persistence",
+        "other"
+      ],
+      "example": {
+        "event_type": "source.bridge.unreachable",
+        "payload": {
+          "status": "down",
+          "producer_id": "bridge-01",
+          "reason_code": "common.will_published"
+        }
+      },
+      "derived_from": "MQTT Last Will on the health topic (TrailSource docs/STATUS.md)"
     },
     {
       "code": "common.config_changed",

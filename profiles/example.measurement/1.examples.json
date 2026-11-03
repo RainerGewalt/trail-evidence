@@ -1,0 +1,65 @@
+{
+  "profile": "example.measurement/1",
+  "note": "Payloads for example.measurement/1 and whether a verifier must accept them. Every verifier in this repository checks these cases; scripts/profiles.py also checks them with a full JSON Schema validator when the jsonschema package is installed.",
+  "valid": [
+    {
+      "description": "required members only",
+      "payload": { "quantity": "temperature", "value": "21.5", "unit": "degC" }
+    },
+    {
+      "description": "every member of the profile",
+      "payload": {
+        "quantity": "temperature",
+        "value": "21.5",
+        "unit": "degC",
+        "uncertainty": "0.1",
+        "samples": 16,
+        "sensor": { "id": "pt100-line1", "calibrated": true },
+        "tags": ["line1", "oven"],
+        "note": null
+      }
+    },
+    {
+      "description": "members the profile does not name are allowed: minor versions within a major only add members",
+      "payload": { "quantity": "pressure", "value": "1.013", "unit": "bar", "added_in_a_later_minor": { "any": ["shape"] } }
+    },
+    {
+      "description": "an integer-valued number is an integer (JSON Schema semantics): 16.0 passes as samples",
+      "payload": { "quantity": "count", "value": "16", "unit": "1", "samples": 16.0 }
+    }
+  ],
+  "invalid": [
+    {
+      "description": "unit is missing",
+      "payload": { "quantity": "temperature", "value": "21.5" }
+    },
+    {
+      "description": "value is a JSON number instead of a decimal string",
+      "payload": { "quantity": "temperature", "value": 21.5, "unit": "degC" }
+    },
+    {
+      "description": "samples has a fraction",
+      "payload": { "quantity": "temperature", "value": "21.5", "unit": "degC", "samples": 2.5 }
+    },
+    {
+      "description": "sensor lacks its required id",
+      "payload": { "quantity": "temperature", "value": "21.5", "unit": "degC", "sensor": { "calibrated": false } }
+    },
+    {
+      "description": "a tag is not a string",
+      "payload": { "quantity": "temperature", "value": "21.5", "unit": "degC", "tags": ["line1", 7] }
+    },
+    {
+      "description": "note is neither a string nor null",
+      "payload": { "quantity": "temperature", "value": "21.5", "unit": "degC", "note": false }
+    },
+    {
+      "description": "the payload is not an object",
+      "payload": ["temperature", "21.5", "degC"]
+    },
+    {
+      "description": "the payload is null",
+      "payload": null
+    }
+  ]
+}

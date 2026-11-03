@@ -1,7 +1,10 @@
 # Trail Evidence Record v1
 
-Status: **v0.1 draft**. The format may still change before 1.0. Changes
-within the `trail.evidence/1` schema are additive only once 1.0 is tagged.
+Status: **v0.2 draft** (format 0.2 of `trail.evidence/1`, unreleased). The
+format may still change before 1.0. Changes within the `trail.evidence/1`
+schema are additive only once 1.0 is tagged. Format 0.2 is not compatible
+with 0.1 in both directions: `seq` is a decimal string, records carry a state,
+and the finding classes changed (section 9 lists the differences).
 
 The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are to be interpreted
 as described in RFC 2119 and RFC 8174.
@@ -15,9 +18,14 @@ producer form hash chains. A chain can be verified from the records alone,
 without the producer, a database or a network service.
 
 This document defines the record shape, the canonicalisation and hashing
-rules, the chaining rules, the optional signature, and the verification
-algorithm with its finding classes. It does not define storage, transport,
-retention or anchoring to external systems.
+rules, the chaining rules, the optional signature, profiles, and the
+verification algorithm with its record states and finding classes. It does
+not define storage, transport, retention or anchoring to external systems.
+
+Trail Evidence defines the common structure: canonicalisation, chaining and
+versioning. A producer defines its domain data (`payload`) as a **profile**
+(section 3.4), registered in `profiles/` of this repository. This
+repository registers only the test profile `example.measurement/1`.
 
 ## 2. Encoding
 
@@ -43,7 +51,7 @@ retention or anchoring to external systems.
 | `schema` | string | MUST be `"trail.evidence/1"`. |
 | `producer` | object | `kind`, `id`, `version`; see 3.3. |
 | `stream_id` | string | Non-empty. Names one hash chain. A producer MAY run several streams. |
-| `seq` | integer | `>= 0`. Increases by exactly 1 within a stream, except on a restart (4.2). |
+| `seq` | string | Position in the stream as a decimal string: matches `^(0\|[1-9][0-9]*)$` (no sign, no leading zeros, no fraction or exponent) and its value is at most 18446744073709551615 (2^64 - 1). Increases by exactly 1 within a stream, except on a restart (4.2). See the transition rule below. |
 | `prev_hash` | hash | `chain_hash` of the previous record of the stream; genesis hash for the first record; equal to `anchor_hash` on a restart. |
 | `event_type` | string | `<domain>.<noun>.<verb>`, lowercase, exactly three segments matching `^[a-z][a-z0-9_-]*(\.[a-z][a-z0-9_-]*){2}$`. Examples: `transfer.job.result`, `mqtt.decision.deny`, `source.value.observed`, `source.inventory.changed`, `ml.run.completed`. |
 | `time` | object | `recorded_at`, `source`; optional `occurred_at`, `read_at`; see 3.3. |
@@ -53,10 +61,24 @@ retention or anchoring to external systems.
 | `content_hash` | hash | SHA-256 over JCS(`payload`). |
 | `chain_hash` | hash | SHA-256 over JCS(core); see 4.1. |
 
+Transition rule for `seq` (0.x only): a JSON number is accepted in place of
+the string when it is an integer literal of the same form and range, for
+example `7`. A verifier reports it with the notice `legacy_integer_seq` and
+otherwise treats it like the string `"7"`; journals written in format 0.1
+keep verifying. From 1.0 on, a JSON number as `seq` is `schema_invalid`. A
+missing, `null` or malformed `seq` (`"07"`, `"-1"`, `"1.0"`, `1.0`, `-0`,
+`"18446744073709551616"`) is `schema_invalid` in every version.
+
+`seq` is a string because JCS renders numbers as IEEE-754 doubles (4.3): as a
+number, 9007199254740993 would be hashed as 9007199254740992, and any
+implementation that parses JSON numbers into doubles cannot tell
+9007199254740992 and 9007199254740993 apart.
+
 ### 3.2 Optional members
 
 | Member | Type | Rule |
 |---|---|---|
+| `profile` | string | `<name>/<major>`: the profile that defines the payload (3.4). `name` matches `^[a-z][a-z0-9]*(\.[a-z][a-z0-9_]*)+$`, `major` is an integer >= 1 without leading zeros. Part of the core. |
 | `chain_restart` | boolean | When present it MUST be `true`. Marks the first record of a new segment (4.2). Part of the core. |
 | `anchor_hash` | hash | MUST be present if and only if `chain_restart` is present. Last known `chain_hash` of the previous segment, or the genesis hash if unknown. Part of the core. |
 | `signature` | object | `alg`, `key_id`, `sig`; see 5. Not part of the core. |
@@ -107,6 +129,40 @@ or `anchor` make a record invalid. `payload` and `context` are free.
 - When no policy applies the producer MUST use
   `{"id":"none","version":"0","hash":"sha256:<64 zeros>"}`.
 
+### 3.4 Profiles
+
+A profile names the payload schema of a kind of record, for example the
+decision records of a broker. The producer defines it; the shared contract
+stays the same for every producer.
+
+- `profile` is `<name>/<major>`, for example `example.measurement/1`. The
+  name has at least two dot-separated segments; the first SHOULD identify the
+  producer or its organisation.
+- The schema of a profile is `profiles/<name>/<major>.schema.json` in this
+  repository. `profiles/README.md` describes how a producer submits one:
+  the schema, example payloads that must be accepted or rejected, and a
+  journal written by the producer's own implementation.
+- **Versioning.** Only the major version is part of the identifier. Minor
+  versions within a major are additive: they MAY add optional members and
+  MUST NOT add required members, remove members, change a member's type or
+  change its meaning. Anything else is a new major. Because a record of a
+  later minor version may carry members an older schema does not name,
+  profile schemas allow members they do not name and check only required
+  members and types.
+- **Schema subset.** A profile schema is a JSON Schema 2020-12 document
+  whose top level has `type: "object"`. It uses only the keywords `type`
+  (a type name or an array of them), `required`, `properties` and `items`
+  (a single schema), plus the annotations `$schema`, `$id`, `$comment`,
+  `title`, `description` and `examples`. The keywords have their JSON Schema
+  meaning: `integer` is any number without a fractional part (`16.0`
+  counts), `required` and `properties` apply to objects only, `items` to
+  arrays only. Any other keyword makes the schema unusable as a profile.
+- `profile` is part of the core: a record whose profile was changed after
+  sealing fails `chain_hash` (vector `profile-valid`, fixture
+  `profile-tampered.jsonl`).
+
+How a verifier evaluates a profile and what it reports is in 6.1 and 6.3.
+
 ## 4. Hashing and chaining
 
 ### 4.1 Hashes
@@ -115,13 +171,16 @@ or `anchor` make a record invalid. `payload` and `context` are free.
 content_hash = "sha256:" + hex( SHA-256( JCS(payload) ) )
 core         = { schema, producer, stream_id, seq, prev_hash, event_type,
                  time, actor, policy, content_hash
-                 [, chain_restart, anchor_hash  -- when present] }
+                 [, chain_restart, anchor_hash, profile  -- when present] }
 chain_hash   = "sha256:" + hex( SHA-256( JCS(core) ) )
 ```
 
 The core contains exactly the listed members, taken from the record as
 written (including optional sub-members such as `time.occurred_at` or
-`actor.roles` when present) and nothing else. `signature`, `correlation_id`,
+`actor.roles` when present) and nothing else. Every member is hashed in the
+form the record carries it: `"seq":"7"` and the legacy `"seq":7` give
+different `chain_hash` values, and a verifier never converts one into the
+other before hashing (vector `seq-legacy-integer`). `signature`, `correlation_id`,
 `job_id`, `decision_id`, `context`, `redaction` and `anchor` are never
 hashed. Two records that differ only in those members have the same
 `chain_hash` (vectors `context-absent` and `context-present`).
@@ -130,15 +189,18 @@ Member order in the serialised record is irrelevant; JCS sorts.
 
 ### 4.2 Chaining and restarts
 
-- The first record of a stream has `seq = 0` and `prev_hash = genesis`.
+- The first record of a stream has `seq = "0"` and `prev_hash = genesis`.
 - Every following record has `seq = previous.seq + 1` and
   `prev_hash = previous.chain_hash`.
+- `seq` values are compared as integers of arbitrary size, never as IEEE-754
+  doubles and never as strings. "18446744073709551615" is followed by
+  nothing: a producer that reaches it starts a new segment with a restart.
 - When a producer cannot continue a segment (new process, lost state, new
   storage), it starts a new segment with `chain_restart: true`,
   `anchor_hash` set to the last `chain_hash` it knows from the previous
   segment (or genesis if it knows none), `prev_hash = anchor_hash`, and any
-  `seq` (normally 0). A restart is a notice, not a failure, when the anchor
-  matches the previous segment or is genesis.
+  `seq` (normally `"0"`). A restart is a notice, not a failure, when the
+  anchor matches the previous segment or is genesis.
 - `seq` and `prev_hash` are judged per `stream_id`. A journal MAY interleave
   records of several streams.
 
@@ -174,71 +236,174 @@ Member order in the serialised record is irrelevant; JCS sorts.
 
 ## 6. Verification
 
-A verifier reads a journal line by line, tracks one state per `stream_id`
-(`last_seq`, `last_chain_hash`), and reports **findings**. A finding has a
-record index (counting non-empty lines from 0), a class, a severity and a
-message. The journal verifies (`ok`) when no finding has severity `error`.
+A verifier reads a journal line by line, gives every non-empty line (a
+**record**, counted from index 0) a **state** and a **profile state**, and
+reports **findings**. A finding has a record index, a class, a severity and
+a message. Per `stream_id` the verifier keeps the last checked position
+(`last_seq`, `last_chain_hash`) and the state of the record it came from.
 
-### 6.1 Finding classes
+### 6.1 Record states and profile states
 
-| Class | Severity | Meaning |
-|---|---|---|
-| `schema_invalid` | error | Not a JSON object, unknown member, wrong type, missing required member, `null` in a typed member, value outside its enumeration or pattern, restart invariants violated. |
-| `hash_mismatch` | error | Recomputed `content_hash` or `chain_hash` differs from the recorded one. |
-| `chain_break` | error | `prev_hash` does not match the previous `chain_hash` of the stream; first record of a stream is neither genesis nor a restart; restart `anchor_hash` matches neither the previous segment's last `chain_hash` nor genesis. |
-| `seq_gap` | error | `seq` is not previous + 1; first record of a stream has `seq != 0` without restart. |
-| `restart` | notice | A record with `chain_restart: true`. Reported separately so that breaks and gaps stay distinguishable from intended restarts. |
-| `number_precision` | notice | `payload` contains an integer literal outside ±2^53 (no fraction, no exponent). The hashes are still well defined, but the value was rounded by canonicalisation; see 4.3. |
-| `signature_invalid` | error | Signature present but malformed or not verifying with the given key; or, when signatures are required, a record without one. |
+Every record is in exactly one state:
 
-### 6.2 Algorithm
+| State | Definition |
+|---|---|
+| `valid` | Every check that applies to the record ran and passed: schema, `content_hash`, `chain_hash`, the link to its predecessor, `seq`, the profile if the verifier knows it, and the signature if the record is signed and a key was given. |
+| `invalid` | At least one check failed: the record has a finding of an error class (6.2): `schema_invalid` (including a missing or malformed `seq`, or a line that is not a JSON object or has no `schema`), `hash_mismatch`, `chain_break` with the predecessor present, `seq_mismatch` (seq repeated, going backwards, or skipping although `prev_hash` links to the predecessor), `signature_invalid`, `profile_invalid`. |
+| `unknown` | The record's own hashes are correct, but its link cannot be checked because its predecessor is not in the journal: the first record after a gap (`seq` ahead of the expected value and `prev_hash` not linking to the last checked record), or the first record of a stream that is neither genesis (`prev_hash` genesis, `seq` `"0"`) nor a restart. The gap itself is the finding `seq_gap`. A record that links correctly to an `unknown` record is `valid` relative to it and carries the notice `after_unknown`. |
+| `outside_scope` | The record does not belong to this contract: `schema` is a string of the form `<name>/<major>` (`^[a-z][a-z0-9_-]*(\.[a-z][a-z0-9_-]*)*/(0\|[1-9][0-9]*)$`) other than `trail.evidence/1`, naming another format or another major version. It is not checked and does not take part in any chain (6.3, step 2). |
+
+`invalid` takes precedence over `unknown`: a record after a gap whose own
+hash is wrong is `invalid`, and its `seq_gap` is reported as well. A state
+describes the record, not the options: `strict` (6.4) changes the verdict,
+never a state.
+
+Every record also has a profile state:
+
+| Profile state | Definition |
+|---|---|
+| `none` | The record has no `profile` member, or it was not evaluated because the record is not a decodable record of this contract (step 1 to 3 of 6.3). |
+| `valid` | The verifier knows the profile and the payload satisfies its schema. |
+| `invalid` | The verifier knows the profile and the payload violates its schema (`profile_invalid`; the record is `invalid` as well), or the `profile` member itself is malformed (`schema_invalid`). |
+| `outside_scope` | The `profile` member is well formed but the verifier does not know the name or does not support the major version (notice `profile_unknown`). The payload is not checked against a profile; the record's state follows from the other checks alone. |
+
+### 6.2 Finding classes
+
+| Class | Severity | Record state | Meaning |
+|---|---|---|---|
+| `schema_invalid` | error | invalid | Not a JSON object, unknown member, wrong type, missing required member, `null` in a typed member, value outside its enumeration, pattern or range (including `seq`), a malformed `profile`, restart invariants violated. Reported once per record; the message lists every problem found. |
+| `hash_mismatch` | error | invalid | Recomputed `content_hash` or `chain_hash` differs from the recorded one. |
+| `chain_break` | error | invalid | `prev_hash` does not link to the predecessor although the predecessor is present: `seq` is the expected one (or lower) but `prev_hash` is not the previous `chain_hash`; the first record of a stream has `seq` `"0"` but no genesis `prev_hash` and no restart; a restart's `anchor_hash` matches neither the previous segment's last `chain_hash` nor genesis. |
+| `seq_mismatch` | error | invalid | `seq` contradicts the link: it repeats or goes backwards, or `prev_hash` links to the predecessor but `seq` skips ahead (a record cannot be missing between two linked records; this is what deleting a record and re-sealing its successor looks like). |
+| `signature_invalid` | error | invalid | Signature present but malformed or not verifying with the given key; or, when signatures are required, a record without one. |
+| `profile_invalid` | error | invalid | The payload violates the schema of a known profile. |
+| `seq_gap` | notice; error with `strict` | unknown | `seq` is ahead of the expected value and `prev_hash` does not link to the last checked record of the stream: records are missing from the journal before this one (also at the start of a journal that begins in the middle of a stream). |
+| `outside_scope` | notice; error with `strict` | outside_scope | The record names another format or major version and was not checked. |
+| `profile_unknown` | notice; error with `strict` | (unchanged) | The record's profile is not known to this verifier; its payload was not checked against a profile. |
+| `restart` | notice | (unchanged) | A record with `chain_restart: true`. Reported separately so that breaks and gaps stay distinguishable from intended restarts. |
+| `after_unknown` | notice | (unchanged) | The record links correctly (`prev_hash` and `seq`, or `anchor_hash` of a restart) to a record in state `unknown`. It is valid relative to that record, not relative to the start of the stream. Only the record directly after an `unknown` record carries it. |
+| `legacy_integer_seq` | notice | (unchanged) | `seq` is a JSON number (format 0.1). Accepted during 0.x; `schema_invalid` from 1.0 (3.1). |
+| `number_precision` | notice | (unchanged) | `payload` contains an integer literal outside ±2^53 (no fraction, no exponent). The hashes are still well defined, but the value was rounded by canonicalisation; see 4.3. |
+
+These classes are verifier output. They are not reason codes: a producer
+never writes them into a record, and `docs/REASON_CODES.md` does not list
+them.
+
+### 6.3 Algorithm
 
 For each non-empty line, in file order:
 
-1. **Decode.** Parse the line as JSON. If it is not an object, or a typed
-   member has the wrong JSON type (for example a string `seq`, a non-object
-   `producer`), or an unknown member appears in the top-level object or in a
-   typed sub-object, report `schema_invalid` and **skip the record**: it
-   takes no part in steps 2 to 6 and does not change the stream state.
-2. **Schema.** Report every other structural violation (3.1 to 3.3, 4.2
-   invariants) as `schema_invalid`. Continue.
-3. **Hashes.** Recompute `content_hash` over JCS(`payload`). Build the core
+1. **Parse.** If the line is not a JSON object, report `schema_invalid`;
+   the record is `invalid` and takes no part in steps 2 to 8.
+2. **Scope.** If `schema` is a string of the form `<name>/<major>` other
+   than `trail.evidence/1`, report `outside_scope`; the record is
+   `outside_scope`. It takes no part in steps 3 to 8: it is not hashed, does
+   not change any stream state and is not counted as signed or unsigned. A
+   line without `schema`, or with any other `schema` value, stays in scope
+   and fails step 4.
+3. **Decode.** If a typed member has the wrong JSON type (for example a
+   non-object `producer`, a non-string `profile`) or an unknown member
+   appears in the top-level object or in a typed sub-object, report
+   `schema_invalid` and **skip the record**: it is `invalid` and takes no
+   part in steps 4 to 8. `seq` is not checked here.
+4. **Schema.** Report every other structural violation (3.1 to 3.4, 4.2
+   invariants) as one `schema_invalid` finding, including a missing, `null`
+   or malformed `seq`. A `seq` written as a JSON number of the allowed form
+   is reported as `legacy_integer_seq`.
+5. **Hashes.** Recompute `content_hash` over JCS(`payload`). Build the core
    from the record's own members, replacing `content_hash` with the
    recomputed value, and recompute `chain_hash`. Report each difference as
    `hash_mismatch`. If `payload` contains integer literals outside ±2^53,
    report one `number_precision` notice for the record.
-4. **Chain.** Look up the state of `stream_id`:
-   - record has `chain_restart`: report `restart` (notice); if the stream was
-     seen before and `anchor_hash` is neither its `last_chain_hash` nor
-     genesis, report `chain_break`.
-   - stream not seen before: `prev_hash != genesis` is a `chain_break`;
-     otherwise `seq != 0` is a `seq_gap`.
-   - stream seen before: `prev_hash != last_chain_hash` is a `chain_break`;
-     `seq != last_seq + 1` is a `seq_gap`.
-   Then set `last_seq = seq` and `last_chain_hash` to the record's
+6. **Profile.** Without `profile` the profile state is `none`. A malformed
+   `profile` was reported in step 4; the profile state is `invalid`. If the
+   verifier knows the profile, check `payload` against its schema: a
+   violation is `profile_invalid` and the profile state `invalid`, else
+   `valid`. If it does not know the profile, report `profile_unknown`; the
+   profile state is `outside_scope`.
+7. **Chain.** Only a record with a **position** takes part: a non-empty
+   string `stream_id` and a usable `seq`. A record without one (for example
+   a missing `seq`) is `invalid` from step 4 and does not change the stream
+   state, so the next record of the stream is judged against the last record
+   that had a position. Otherwise look up the stream:
+   - The record has `chain_restart: true` and an `anchor_hash`: report
+     `restart`. If the stream was seen before and `anchor_hash` is neither
+     its `last_chain_hash` nor genesis, report `chain_break`. If it equals
+     the `last_chain_hash` of an `unknown` record, report `after_unknown`.
+   - Otherwise the expected predecessor is `last_chain_hash` and the
+     expected seq `last_seq + 1`; for a stream not seen before they are the
+     genesis hash and `0`. The record is **linked** when `prev_hash` equals
+     the expected predecessor. Then:
+
+     | linked | `seq` compared with the expected seq | Result |
+     |---|---|---|
+     | yes | equal | no finding (`after_unknown` if the previous record is `unknown`) |
+     | yes | higher | `seq_mismatch` |
+     | yes | lower (repeated or backwards) | `seq_mismatch` |
+     | no | equal | `chain_break` |
+     | no | higher | `seq_gap`: the predecessor is not in the journal |
+     | no | lower | `chain_break` and `seq_mismatch` |
+
+   Then set `last_seq` to the record's `seq`, `last_chain_hash` to its
    **declared** `chain_hash`, so that later records are judged against what
-   they were actually linked to.
-5. **Signature.** If a public key is given and the record carries a
-   signature, verify it per section 5; failure is `signature_invalid`. If a
-   public key is given, the verifier was told to require signatures, and the
-   record has none, report `signature_invalid`. Without a key, signatures are
-   counted but not checked.
-6. Continue with the next line. Verification does not stop at the first
-   error.
+   they were actually linked to, and remember the record's state (step 9)
+   for `after_unknown`.
+8. **Signature.** For every record that passed step 3: if a public key is
+   given and the record carries a signature, verify it per section 5;
+   failure is `signature_invalid`. If a public key is given, the verifier
+   was told to require signatures, and the record has none, report
+   `signature_invalid`. Without a key, signatures are counted but not
+   checked.
+9. **State.** `invalid` if the record has a finding of an error class,
+   otherwise `unknown` if it has `seq_gap`, otherwise `valid`
+   (`outside_scope` was decided in step 2).
 
-The report SHOULD contain: `ok`, number of records, number of errors,
-number of notices, number of restarts, number of signed records, number of verified
-signatures, a summary per stream (`stream_id`, records, first and last
-`seq`, `last_chain_hash`, restarts), and the findings.
+Verification does not stop at the first error.
 
-### 6.3 What verification does and does not prove
+### 6.4 Verdict and strict verification
 
-- A record cannot be altered, removed or reordered within a journal without
-  a `hash_mismatch`, `chain_break` or `seq_gap`.
+The journal verifies (`ok`) when no finding has severity error. Without
+strict verification that means: no record is `invalid`. Records in state
+`unknown` or `outside_scope` and profiles in state `outside_scope` are
+counted and reported, but do not fail the journal.
+
+With **strict** verification (`--strict` on the command line, `strict` in
+the Python and JavaScript APIs and the GitHub Action, the checkbox on the
+browser page) the classes `seq_gap`, `outside_scope` and `profile_unknown`
+are reported with severity error. The journal then verifies only when every
+record is `valid` and every profile was checked. States do not change.
+
+### 6.5 Report
+
+The report SHOULD contain: `ok`, `strict`, the number of records, errors,
+notices and restarts, the number of signed records and of verified
+signatures, `states` (records per state), `profile_states` (records per
+profile state), a summary per stream (`stream_id`, records with a position,
+first and last `seq`, `last_chain_hash`, restarts), `results` (per record:
+index, line, `stream_id` and `seq` when known, `state`, `profile` when
+present, `profile_state`), and the findings with index, line, `stream_id`,
+`seq`, class, severity and message. Reports write `seq` values as decimal
+strings, like the records.
+
+### 6.6 What verification does and does not prove
+
+- A record cannot be altered, reordered or removed and its successor
+  re-sealed without a `hash_mismatch`, `chain_break` or `seq_mismatch`.
+- A record removed from a journal without touching the others, or a record
+  whose `schema` was changed to another format, leaves the next record
+  `unknown` (`seq_gap`), not `invalid`. Without strict verification such a
+  journal verifies. A passing journal without strict verification means
+  that no record is provably wrong, not that the journal is complete; use
+  strict verification to require that every record is `valid`.
 - An unsigned journal can be rewritten wholesale by whoever controls the
   file. Signatures bind the chain to a key; anchoring the latest
   `chain_hash` elsewhere (`anchor`) binds it to a point in time. Neither is
   implied by a passing verification without keys.
+- A `valid` record after an `unknown` one is valid relative to that record:
+  nothing in the journal shows what came before it.
+- A profile state `valid` says that the payload has the members and types
+  the profile requires. It does not say that the values are true, and a
+  verifier that does not know the profile says nothing about the payload.
 - Verification says nothing about whether `payload` is true, whether
   `time.recorded_at` is accurate (see `time.source`), or whether the policy
   named in `policy` was the right one.
@@ -247,11 +412,14 @@ signatures, a summary per stream (`stream_id`, records, first and last
 
 `testdata/vectors.json` is produced by the Go reference implementation and
 contains, per vector, the record and the expected payload JCS,
-`content_hash`, core JCS and `chain_hash`. Every implementation MUST
-reproduce these values byte for byte. `testdata/streams/` holds journals
-with the findings a verifier MUST report. The signing key in
-`testdata/keys/` is a published test key (RFC 8032 test vector 1).
-Section 10 turns these files into the conformance criterion.
+`content_hash`, core JCS and `chain_hash`, and the state and profile state
+of the record on its own. Every implementation MUST reproduce these values
+byte for byte. `testdata/streams/` holds journals with the findings and the
+state and profile state of every record a verifier MUST report, some of them
+with strict verification. `profiles/` holds the registered profiles with
+their example payloads and journals. The signing key in `testdata/keys/` is
+a published test key (RFC 8032 test vector 1). Section 10 turns these files
+into the conformance criterion.
 
 ## 8. Mapping notes (informative)
 
@@ -267,7 +435,8 @@ Section 10 turns these files into the conformance criterion.
   fingerprint → `policy{kind:"addressspace"}` on value events.
 - Broker decision logs: one record per decision with `payload` carrying the
   message and decision fields, `policy` the matched rule, `actor` the
-  authenticated client; produced by an export adapter.
+  authenticated client. The broker's producer defines the payload as its own
+  profile and registers it (3.4); this repository does not define it.
 - ML pipeline: the audit record of a run becomes the `payload` of
   `ml.run.completed`; the recipe becomes `policy{kind:"recipe"}` with its
   lifecycle `status`.
@@ -282,7 +451,31 @@ Section 10 turns these files into the conformance criterion.
 
 `schema` carries name and major version. Within `trail.evidence/1`, new
 optional members MAY be added; existing members, enumerations, hashing and
-chaining rules MUST NOT change. Anything else is `trail.evidence/2`.
+chaining rules MUST NOT change. Anything else is `trail.evidence/2`. This
+rule binds from 1.0 on. Until then the format is a draft and versions 0.x
+of this repository may change it; each such change is listed in
+`CHANGELOG.md`.
+
+Format 0.2 changed, compared with 0.1:
+
+- `seq` is a decimal string (3.1). A JSON number is still accepted during
+  0.x with the notice `legacy_integer_seq`; from 1.0 it is `schema_invalid`.
+- Every record has a state and a profile state (6.1); reports carry
+  `strict`, `states`, `profile_states` and `results`, and write `seq` as a
+  decimal string.
+- The optional core member `profile` (3.2, 3.4).
+- New finding classes `seq_mismatch`, `profile_invalid`, `outside_scope`,
+  `profile_unknown`, `after_unknown`, `legacy_integer_seq`. `seq_gap` is a
+  notice that makes a record `unknown`; a skipped, repeated or backwards
+  `seq` on a linked record is `seq_mismatch`. A journal that starts in the
+  middle of a stream is `unknown` at its first record instead of a
+  `chain_break`.
+- `schema_invalid` is reported once per record.
+- A record whose `schema` names another format or major version is
+  `outside_scope` instead of `schema_invalid`.
+
+Profiles have their own major versions (3.4). A new minor version of a
+profile changes neither the record format nor the profile identifier.
 
 ## 10. Conformance
 
@@ -300,16 +493,27 @@ when it meets producer conformance and in addition
 
 1. for every vector, reports the notice classes in `expected_notices` for
    the record on its own, no error for vectors with `expected_valid: true`,
-   and the class `expected_error` for vectors with `expected_valid: false`;
+   the class `expected_error` for vectors with `expected_valid: false`, and
+   the record's state on its own (`expected_state`: `valid`, `invalid` or
+   `outside_scope`) and profile state (`expected_profile_state`);
 2. for every case in `testdata/streams/expected.json`, given the case's
-   `pubkey` and `require_signatures`, reaches exactly the listed `ok`,
-   `records` and `restarts`, and reports exactly the listed distinct
-   (`index`, `class`) pairs in the listed order of first occurrence. Reporting
-   the same pair more than once is allowed (one `hash_mismatch` each for
-   `content_hash` and `chain_hash`); an additional or missing pair is not.
+   `pubkey`, `require_signatures` and `strict`, reaches exactly the listed
+   `ok`, `records` and `restarts`, gives every record exactly the state in
+   `states` and the profile state in `profile_states` (by index), and
+   reports exactly the listed distinct (`index`, `class`) pairs in the
+   listed order of first occurrence. Reporting the same pair more than once
+   is allowed (one `hash_mismatch` each for `content_hash` and
+   `chain_hash`); an additional or missing pair is not;
+3. knows every profile in `profiles/` at the suite revision: it accepts every
+   payload under `valid` and rejects every payload under `invalid` in each
+   `<major>.examples.json`, and verifies each `<major>.journal.jsonl` with
+   strict verification, every record `valid` with profile state `valid`. A
+   verifier that does not know a profile still conforms for everything else,
+   but MUST report that profile as `profile_unknown`.
 
-Two cases are named here because implementations most often get them wrong,
-and both are mandatory. They are part of the vector `jcs-edge-cases`:
+Three cases are named here because implementations most often get them
+wrong, and all are mandatory. The first two are part of the vector
+`jcs-edge-cases`:
 
 - **Integers beyond 2^53.** The payload literal `9007199254740993`
   (2^53 + 1) canonicalises to `9007199254740992`, and a verifier reports
@@ -319,6 +523,12 @@ and both are mandatory. They are part of the vector `jcs-edge-cases`:
 - **Member order.** Members are sorted by UTF-16 code units, not by code
   points or UTF-8 bytes: `"🚀"` (U+1F680, surrogates D83D DE80) sorts before
   `"！"` (U+FF01), and `"Z"` before `"a"`, `"ä"` and `"€"`.
+- **seq arithmetic.** `seq` is compared as an integer of arbitrary size
+  (fixtures `seq-decimal.jsonl` and `seq-decimal-mismatch.jsonl`):
+  "9007199254740993" follows "9007199254740992" and repeating it is a
+  `seq_mismatch`, which comparing doubles cannot see; "0" after
+  "18446744073709551615" is a `seq_mismatch`, which 64-bit arithmetic that
+  wraps around does not see.
 
 A claim of conformance names the suite revision it was tested against: a
 release tag or a commit of this repository. New vectors and fixtures within
@@ -327,8 +537,9 @@ conformant stays conformant for every case that existed at its revision.
 
 `scripts/conformance.sh <command>` runs a verifier against the suite and
 reports each vector and fixture. It is informative: it expects the command
-to offer `hash <record.json>` and `verify <journal.jsonl> [--pubkey <file>]
-[--require-signatures] --json` with the output members of the reference
-CLI (see README.md). The criterion is the data above, not the script; an
+to offer `hash <record.json>` (with `state` and `profile_state` in its
+output) and `verify <journal.jsonl> [--pubkey <file>]
+[--require-signatures] [--strict] --json` (with `results`) with the output
+members of the reference CLI (see README.md). The criterion is the data above, not the script; an
 implementation without a CLI can check the same files in its own tests, as
 the Go, Python and JavaScript implementations here do.

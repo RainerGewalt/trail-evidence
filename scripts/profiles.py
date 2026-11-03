@@ -19,7 +19,8 @@ copy with profiles/.
 The check enforces the rules in profiles/README.md: naming, the JSON Schema
 subset (type, required, properties, items and annotations), an examples file
 with valid and invalid payloads that the Python verifier classifies as
-stated, and a journal whose records all verify with profile state valid.
+stated, and a journal with the verdict valid under --require-known-profiles,
+every record with profile state valid.
 With the jsonschema package installed, the examples are also checked with a
 full JSON Schema 2020-12 validator, which must agree.
 """
@@ -147,8 +148,8 @@ def check_journal(pid, problems):
     if not os.path.exists(path):
         return 0
     with open(path, "r", encoding="utf-8") as fh:
-        report = rec.verify_stream(fh, strict=True)
-    if not report.ok or report.profile_states[rec.VALID] != report.records:
+        report = rec.verify_stream(fh, require_known_profiles=True)
+    if report.verdict != rec.VERDICT_VALID or report.profile_states[rec.VALID] != report.records:
         problems.append("%s: %s, profile states %s" % (rel(path), report.summary(), report.profile_states))
     if any(r.profile != pid for r in report.results):
         problems.append("%s: every record must carry the profile %s" % (rel(path), pid))

@@ -628,6 +628,27 @@
       "derived_from": "TrailSource source.connection.changed, orderly shutdown"
     },
     {
+      "code": "source.certificate_rejected",
+      "namespace": "source",
+      "severity": "error",
+      "meaning": "The bridge refused the source's certificate: not in its trust list, outside its validity period, revoked or of unknown revocation status, issued for another application, or not matching a configured pin. Nothing is read until an administrator trusts the certificate; the bridge keeps a copy for review.",
+      "producer_kinds": [
+        "source-bridge"
+      ],
+      "example": {
+        "event_type": "source.connection.changed",
+        "payload": {
+          "source_address": "opc.tcp://plc-7:4840",
+          "state": "disconnected",
+          "check": "untrusted",
+          "certificate_thumbprint": "c75e5e8f51168ba9aa9fd4af07836de63850e71f",
+          "rejected_file": "pki/rejected/c75e5e8f51168ba9aa9fd4af07836de63850e71f.der",
+          "reason_code": "source.certificate_rejected"
+        }
+      },
+      "derived_from": "TrailSource trust list (OPC UA trusted/ and rejected/ directories)"
+    },
+    {
       "code": "source.queue_overflow",
       "namespace": "source",
       "severity": "error",

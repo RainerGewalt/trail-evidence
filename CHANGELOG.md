@@ -12,8 +12,10 @@ tagged. Until then the record format is a draft and may change.
   `source.connection_failed`, `source.connection_closed`,
   `source.node_changed` and `common.will_published`, taken from the
   connection records, the inventory diff and the health topic of
-  TrailSource. The catalog now has 43 codes; no existing code changed its
-  name or meaning.
+  TrailSource. No existing code changed its name or meaning.
+- Reason code `source.certificate_rejected` (error), additive: a source
+  bridge refused the source's certificate (trust list, validity,
+  revocation, application URI or pin). The catalog now has 44 codes.
 
 ## 0.1.0 - 2026-11-03
 

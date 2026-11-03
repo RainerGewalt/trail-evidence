@@ -419,7 +419,7 @@ func buildExamples() []Journal {
 	t := []*evidence.Record{
 		tw(0, "2026-11-02T06:00:12.500Z", "job-1001", `{"action":"copy","source":"sftp://files.example/in/report-2026-11-01.csv","target":"s3://archive/2026/11/report-2026-11-01.csv","status":"ok","files":1,"bytes":48213,"duration_ms":812,"command_hash":"sha256:2f1c0a6b4d8e9f00112233445566778899aabbccddeeff00112233445566778a"}`),
 		tw(1, "2026-11-02T06:05:03.120Z", "job-1002", `{"action":"move","source":"sftp://files.example/in/batch-07/","target":"s3://archive/2026/11/batch-07/","status":"ok","files":14,"bytes":1048576,"duration_ms":4310,"command_hash":"sha256:9a8b7c6d5e4f30211223344556677889900aabbccddeeff0011223344556677b"}`),
-		tw(2, "2026-11-02T06:10:00.004Z", "job-1003", `{"action":"copy","source":"sftp://files.example/in/missing.csv","target":"s3://archive/2026/11/missing.csv","status":"failed","error":"source not found","files":0,"bytes":0,"duration_ms":95,"command_hash":"sha256:0c0ffee00ddba11000112233445566778899aabbccddeeff001122334455667c"}`),
+		tw(2, "2026-11-02T06:10:00.004Z", "job-1003", `{"action":"copy","source":"sftp://files.example/in/missing.csv","target":"s3://archive/2026/11/missing.csv","status":"failed","error":"source not found","reason_code":"transfer.source_not_found","files":0,"bytes":0,"duration_ms":95,"command_hash":"sha256:0c0ffee00ddba11000112233445566778899aabbccddeeff001122334455667c"}`),
 		tw(3, "2026-11-02T06:15:44.900Z", "job-1004", `{"action":"copy","source":"sftp://files.example/in/report-2026-11-02.csv","target":"s3://archive/2026/11/report-2026-11-02.csv","status":"ok","files":1,"bytes":49102,"duration_ms":790,"command_hash":"sha256:4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d"}`),
 	}
 	t[2].Redaction = nil
@@ -467,11 +467,11 @@ func buildExamples() []Journal {
 	}
 	b := []*evidence.Record{
 		bk(0, "2026-11-02T08:00:00.010Z", "mqtt.decision.allow", "d-0001", "sensor-gw-3", []string{"publisher"}, "plant/+/telemetry", "12",
-			`{"client_id":"sensor-gw-3","topic":"plant/line1/telemetry","action":"publish","qos":1,"payload_size":212,"payload_hash":"sha256:3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b","access_decision":"allow","reason_code":"rule_match"}`),
+			`{"client_id":"sensor-gw-3","topic":"plant/line1/telemetry","action":"publish","qos":1,"payload_size":212,"payload_hash":"sha256:3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b","access_decision":"allow","reason_code":"mqtt.rule_match"}`),
 		bk(1, "2026-11-02T08:00:00.350Z", "mqtt.decision.deny", "d-0002", "guest-app", []string{"guest"}, "plant/+/control", "12",
-			`{"client_id":"guest-app","topic":"plant/line1/control","action":"publish","qos":0,"payload_size":16,"payload_hash":"sha256:7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c","access_decision":"deny","reason_code":"no_matching_grant"}`),
+			`{"client_id":"guest-app","topic":"plant/line1/control","action":"publish","qos":0,"payload_size":16,"payload_hash":"sha256:7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c","access_decision":"deny","reason_code":"mqtt.no_matching_grant"}`),
 		bk(2, "2026-11-02T08:00:01.000Z", "mqtt.decision.allow", "d-0003", "hmi-line1", []string{"operator"}, "plant/+/control", "12",
-			`{"client_id":"hmi-line1","topic":"plant/line1/control","action":"subscribe","qos":1,"access_decision":"allow","reason_code":"rule_match"}`),
+			`{"client_id":"hmi-line1","topic":"plant/line1/control","action":"subscribe","qos":1,"access_decision":"allow","reason_code":"mqtt.rule_match"}`),
 	}
 	sealChain(b)
 	out = append(out, Journal{File: "broker-export.jsonl", Lines: lines(b...)})

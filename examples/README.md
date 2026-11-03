@@ -6,10 +6,13 @@ records comes from a real deployment.
 
 | File | Producer kind | Event types | Notes |
 |---|---|---|---|
-| `transfer-worker.jsonl` | `transfer-worker` | `transfer.job.result` | Self-declared actor, approved transfer policy, `job_id` per record; one failed job is evidence too. |
+| `transfer-worker.jsonl` | `transfer-worker` | `transfer.job.result` | Self-declared actor, approved transfer policy, `job_id` per record; one failed job (`reason_code: transfer.source_not_found`) is evidence too. |
 | `source-bridge.jsonl` | `source-bridge` | `source.inventory.changed`, `source.value.observed` | Three timestamps (`occurred_at`, `read_at`, `recorded_at`), NTP time source, address space fingerprint as `policy{kind:"addressspace"}`, connection details in `context` (not hashed). Values are strings so their decimal form is exact. |
-| `broker-export.jsonl` | `broker` | `mqtt.decision.allow`, `mqtt.decision.deny` | What an export adapter for a broker decision log would emit: broker-authenticated actor with roles, matched topic rule as policy, `decision_id` and `correlation_id`. |
+| `broker-export.jsonl` | `broker` | `mqtt.decision.allow`, `mqtt.decision.deny` | What an export adapter for a broker decision log would emit: broker-authenticated actor with roles, matched topic rule as policy, `decision_id` and `correlation_id`, `reason_code` `mqtt.rule_match` or `mqtt.no_matching_grant`. |
 | `ml-pipeline.jsonl` | `ml-pipeline` | `ml.run.started`, `ml.run.completed`, `ml.prediction.created` | Recipe as `policy{kind:"recipe", status:"approved"}`, metrics as strings, config and data fingerprints in the payload. |
+
+The `reason_code` values come from the catalog in
+[`docs/REASON_CODES.md`](../docs/REASON_CODES.md).
 
 Verify any of them:
 

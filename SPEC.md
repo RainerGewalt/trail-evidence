@@ -1,6 +1,7 @@
 # Trail Evidence Record v1
 
-Status: **v0.2 draft** (format 0.2 of `trail.evidence/1`, unreleased). The
+Status: **v0.2 draft** (format 0.2 of `trail.evidence/1`, released with
+trail-evidence 0.2.0 on 2026-11-03). The
 format may still change before 1.0. Changes within the `trail.evidence/1`
 schema are additive only once 1.0 is tagged. Format 0.2 is not compatible
 with 0.1 in both directions: `seq` is a decimal string, records carry a

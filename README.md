@@ -27,8 +27,8 @@ of that payload, which the producer defines and registers in
 today: [TrailTransfer](https://github.com/RainerGewalt/trailtransfer)
 0.1.0 writes its job journal as `trail.evidence/1` (still with the integer
 `seq` of format 0.1, which 0.x verifiers accept with a notice), and
-[TrailSource](https://github.com/RainerGewalt/trailsource) writes format
-0.2 on its main branch, ahead of its first tagged release. TrailMQ does not
+[TrailSource](https://github.com/RainerGewalt/trailsource) 0.1.0 writes
+format 0.2. TrailMQ does not
 emit it today. `SPEC.md` section 8 describes the mapping for each kind.
 
 ## Try in the browser
@@ -109,6 +109,10 @@ or `cd python && python3 -m trail_evidence …`.
 
 ## Verify a journal
 
+The examples run from a clone of this repository, because they use its
+`examples/` and `testdata/`. With a release archive the binary sits in the
+unpacked folder: call it as `./trail-evidence`, or put it on your `PATH`.
+
 ```bash
 trail-evidence verify examples/transfer-worker.jsonl
 # VALID: 4 record(s) in 1 stream(s), hash chain intact
@@ -159,7 +163,9 @@ error.
 state and profile state of every record. `trail-evidence hash record.json`
 recomputes the hashes of a single record and prints the canonical forms and
 the record's state on its own; `trail-evidence profiles` lists the profiles
-the verifier knows. `trail-evidence-py` takes the same arguments.
+the verifier knows. `trail-evidence-py` takes the same arguments for
+`verify`, `hash` and `profiles`; it has no `version` command
+(`pip show trail-evidence` shows the installed version).
 
 `verify` recomputes every hash and follows every link. The verdict `valid`
 means no record in the file was altered, removed or reordered relative to

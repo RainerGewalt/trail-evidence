@@ -10,6 +10,14 @@ tagged. Until then the record format is a draft and may change.
 
 - README states the released version, the install paths and which
   producers emit the format today.
+- README and docs corrected after a first-use check from a fresh clone:
+  TrailSource 0.1.0 is released, the verify examples need a clone of the
+  repository, `trail-evidence-py` has no `version` command, the Python
+  example in `examples/README.md` uses the right path, and SPEC.md names
+  0.2.0 as released.
+- The browser verifier has an inline icon, so browsers no longer request a
+  missing `favicon.ico`; the page still makes no request besides the two
+  example journals.
 - The PyPI upload in the release workflow is blocking: a failed upload fails
   the release run. 0.2.0 is on PyPI since 2026-11-03.
 

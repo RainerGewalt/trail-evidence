@@ -1,4 +1,9 @@
-# trail-evidence
+<p align="center">
+  <img src="docs/brand/trail-evidence-mark.svg" width="96"
+       alt="Trail Evidence logo: three chained records, the last one checked." />
+</p>
+
+<h1 align="center">trail-evidence</h1>
 
 **Status: v0.2.0, released 2026-11-03. The format may still change before
 1.0; changes are listed in [CHANGELOG.md](CHANGELOG.md).**
@@ -32,6 +37,11 @@ emit it today. `SPEC.md` section 8 describes the mapping for each kind.
 https://rainergewalt.github.io/trail-evidence/
 ```
 
+![The browser verifier after loading the tampered example: verdict INVALID, 4 records in 1 stream with 2 errors; 3 records are valid and 1 is invalid.](docs/screenshots/browser-verifier-invalid.png)
+
+*The tampered example in the browser verifier: one edited record turns the
+verdict to `invalid`.*
+
 Drop a `.jsonl` journal on the page, optionally paste the producer's
 Ed25519 public key (hex, base64url or PEM), and read the verdict, the state
 and profile state of every record (colour, symbol and text), counters per
@@ -40,6 +50,11 @@ of every stream. The verdict is `valid`, `invalid` or `incomplete`; an
 incomplete journal is shown as its own, non-green verdict and fails unless
 you tick "Allow an incomplete journal". "Load the example journal" shows a passing journal; "load a tampered
 example" shows the same journal after one record was edited.
+
+![Records table with record 2 on line 3 marked invalid, the stream summary with its last chain_hash, and two hash_mismatch findings that each show the recorded and the recomputed hash.](docs/screenshots/browser-verifier-findings.png)
+
+*Further down on the same page: record #2 on line 3 is `invalid`, and each
+finding names the recorded and the recomputed hash.*
 
 Nothing is uploaded. The page is plain HTML, CSS and JavaScript without a
 build step or external scripts, hashing uses the browser's WebCrypto, and

@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="t">
+  <title id="t">Trail Evidence: three chained records, the last one checked.</title>
+  <rect x="4" y="4" width="120" height="120" rx="18" fill="#003941"/>
+  <path d="M32 36V88" stroke="#ffffff" stroke-width="5" stroke-linecap="round"/>
+  <circle cx="32" cy="36" r="8" fill="#ffffff"/>
+  <circle cx="32" cy="62" r="8" fill="#ffffff"/>
+  <circle cx="32" cy="88" r="8" fill="#ffffff"/>
+  <rect x="50" y="31" width="50" height="10" rx="5" fill="#ffffff"/>
+  <rect x="50" y="57" width="38" height="10" rx="5" fill="#ffffff"/>
+  <path d="M55 87l10 10 25-26" fill="none" stroke="#F76628" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

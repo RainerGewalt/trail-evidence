@@ -29,7 +29,7 @@ jobs:
         with:
           go-version: stable
           cache-dependency-path: go/go.sum
-      - run: go test ./...
+      - run: go test -race -shuffle=on ./...
       - name: generated files are up to date
         run: go run ./internal/gentestdata -root .. -check
 

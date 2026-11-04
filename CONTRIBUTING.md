@@ -31,15 +31,12 @@ come with a few rules.
 2. Make the change, including `SPEC.md`, the JSON Schema, both
    implementations and `CHANGELOG.md` ("Unreleased").
 3. Regenerate the data: `cd go && go run ./internal/gentestdata -root ..`.
-4. Run everything:
+4. Run everything (`docs/TESTING.md` says what each target covers and where
+   a new test goes):
    ```bash
-   cd go && gofmt -l . && go vet ./... && go test ./... && cd ..
-   cd python && python3 -m unittest discover -s tests && cd ..
-   node web/test/run.mjs
-   scripts/crosscheck.sh            # includes scripts/conformance.sh for all three
-   scripts/validate_schema.py --vectors testdata/vectors.json examples/*.jsonl examples/tampered/*.jsonl profiles/*/*.journal.jsonl
-   scripts/profiles.py --check
-   scripts/reason_codes.py --check
+   make test                # Go (-race -shuffle=on), Python, JavaScript, tooling checks
+   make test-conformance    # scripts/crosscheck.sh, includes scripts/conformance.sh for all three
+   make test-web            # the browser page in headless Chrome (Node 22, Chrome)
    ```
 5. Commit with a conventional subject: `type(scope): subject`, for example
    `fix(python): reject padded base64url signatures`. Scopes in use: `spec`,
@@ -56,7 +53,8 @@ New reason codes go into `schema/reason-codes.json`; run
 - Python 3.9 or newer; the package has no runtime dependencies. The
   `jsonschema` package is optional for `scripts/validate_schema.py` and
   `scripts/profiles.py`, which then also run a full JSON Schema validator.
-- Node 18 or newer for `web/test/run.mjs` and the crosscheck. The page
+- Node 18 or newer for `web/test/run.mjs` and the crosscheck; Node 22 and
+  Chrome or Chromium for `make test-web` and `make first-use`. The page
   itself has no build step and no dependencies.
 
 ## Security

@@ -443,7 +443,8 @@ Python and JavaScript implementations in this repository pass it in CI.
 SPEC.md                         normative specification
 schema/                         record schema; reason code catalog and its schema
 profiles/                       profile registry: <name>/<major>.schema.json, examples, journal
-docs/                           reason code catalog, release procedure
+docs/                           reason code catalog, release procedure, test concept
+Makefile                        entry point for the tests (docs/TESTING.md)
 go/                             Go module github.com/RainerGewalt/trail-evidence/go
   evidence/                       package: Seal, Sign, CheckRecord, VerifyStream; embedded profiles
   cmd/trail-evidence/             CLI: verify, hash, profiles, vectors, version
@@ -457,22 +458,25 @@ examples/                       one verifiable journal per producer kind
 examples/tampered/              one manipulated journal per error class
 scripts/crosscheck.sh           Go, Python and JavaScript must produce identical reports
 scripts/conformance.sh          run any verifier against the conformance suite
+scripts/first-use.sh            first-use check of a release or a ref (make first-use)
 scripts/validate_schema.py      JSON Schema validation of journals and profile payloads
 scripts/profiles.py             check the profile registry, regenerate the verifiers' copies
 scripts/reason_codes.py         check the reason code catalog, regenerate its tables
 ```
 
-Development:
+Development (Go 1.22, Python 3.9 and Node 18 or newer; Node 22 and Chrome
+for `make test-web`):
 
 ```bash
-cd go && go build ./... && go test ./... && cd ..
-cd python && python3 -m unittest discover -s tests && cd ..
-node web/test/run.mjs
-scripts/crosscheck.sh
-scripts/validate_schema.py --vectors testdata/vectors.json examples/*.jsonl examples/tampered/*.jsonl profiles/*/*.journal.jsonl
-scripts/profiles.py --check
-scripts/reason_codes.py --check
+make test               # Go, Python and JavaScript tests, tooling checks; offline
+make test-conformance   # Go, Python and JavaScript against the vectors and each other
+make test-web           # the browser page in headless Chrome
+make first-use REF=main # what a first user does, from a fresh clone
 ```
+
+[`docs/TESTING.md`](docs/TESTING.md) describes the test layers, what each
+command runs, and how a producer tests against a released version of this
+contract.
 
 Vectors, fixtures, examples and the journal of the test profile are
 generated: edit `go/internal/vectors/vectors.go`, run `cd go && go run

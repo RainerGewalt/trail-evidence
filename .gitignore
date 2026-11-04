@@ -22,3 +22,6 @@ __pycache__/
 
 # goreleaser
 /dist/
+
+# first-use reports and work directories (make first-use)
+/.first-use/

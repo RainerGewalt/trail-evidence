@@ -8,6 +8,9 @@ tagged. Until then the record format is a draft and may change.
 
 ### Changed
 
+- The CI jobs run the Makefile targets; the schema job is now "Tooling" and
+  also checks formatting, `go vet` and the generated files.
+- README "Development" and CONTRIBUTING name the Makefile targets.
 - README states the released version, the install paths and which
   producers emit the format today.
 - README and docs corrected after a first-use check from a fresh clone:
@@ -23,6 +26,24 @@ tagged. Until then the record format is a draft and may change.
 
 ### Added
 
+- `docs/TESTING.md`, the test concept: layers L1 to L5 and tooling, where a
+  new test goes, determinism, negative controls, the command and CI
+  mapping, measured budgets, and how a producer runs its own conformance
+  tests against a pinned release of this contract.
+- `Makefile` as the single entry point for the tests: `make test`,
+  `make test-conformance`, `make test-web`, `make first-use`. Go tests run
+  with `-race -shuffle=on`.
+- `make test-web` (`web/test/browser.mjs`): the browser page in headless
+  Chrome loads the bundled example and the tampered example and shows VALID
+  and INVALID; the page requests nothing from another origin and sends
+  nothing but GET requests. Runs in the CI job "Browser page in headless
+  Chrome".
+- `make first-use VERSION=<x.y.z>` and `make first-use REF=<git ref>`
+  (`scripts/first-use.sh`): what the README tells a first user, against the
+  published artifacts of a release (archive with checksums, `go install`,
+  PyPI, GitHub Pages) or a fresh clone of a ref. Workflow `first-use.yml`
+  runs it by hand, after every successful release run and on pull requests
+  that change it, and also runs the GitHub Action of the released tag.
 - Reason code `source.subscription_stalled` (error), additive: a source
   bridge saw neither data nor keep-alive within the agreed keep-alive
   window while the session still answered; it rebuilds the subscription

@@ -1,0 +1,158 @@
+name: first-use
+
+# L5 first-user acceptance (docs/TESTING.md): make first-use against the
+# published artifacts of a version (release archive, go install, PyPI, GitHub
+# Pages, and the GitHub Action at that tag), or against a fresh clone of a
+# ref. Runs by hand, and after every successful release run. The release
+# workflow creates the GitHub release with GITHUB_TOKEN, which starts no
+# "release" event, so the automatic run follows the release workflow
+# (workflow_run) and reads the version from its tag; the "release" trigger
+# covers a release published by hand. A pull request that changes the
+# first-use machinery runs it in REF mode on its own head commit. The report
+# is uploaded as an artifact.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Released version without the leading v, e.g. 0.2.0 (tests the published artifacts)"
+        required: false
+        default: ""
+      ref:
+        description: "Branch, tag or commit for a fresh clone (used when version is empty; default: the branch this runs on)"
+        required: false
+        default: ""
+  workflow_run:
+    workflows: [release]
+    types: [completed]
+  release:
+    types: [published]
+  pull_request:
+    paths:
+      - Makefile
+      - scripts/first-use.sh
+      - web/test/browser.mjs
+      - .github/workflows/first-use.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: first-use-${{ github.event.inputs.version || github.event.inputs.ref || github.event.workflow_run.head_branch || github.event.release.tag_name || github.event.pull_request.head.sha || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: Resolve version or ref
+    runs-on: ubuntu-latest
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    outputs:
+      version: ${{ steps.pick.outputs.version }}
+      ref: ${{ steps.pick.outputs.ref }}
+    steps:
+      - id: pick
+        env:
+          EVENT: ${{ github.event_name }}
+          IN_VERSION: ${{ github.event.inputs.version }}
+          IN_REF: ${{ github.event.inputs.ref }}
+          RUN_TAG: ${{ github.event.workflow_run.head_branch }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          PR_SHA: ${{ github.event.pull_request.head.sha }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="" ref=""
+          case "$EVENT" in
+            workflow_dispatch) version="${IN_VERSION#v}"; ref="$IN_REF"
+                               if [ -z "$version" ] && [ -z "$ref" ]; then ref="$BRANCH"; fi ;;
+            workflow_run)      version="${RUN_TAG#v}" ;;
+            release)           version="${RELEASE_TAG#v}" ;;
+            pull_request)      ref="$PR_SHA" ;;
+          esac
+          if [ -n "$version" ] && ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::not a version: $version"; exit 1
+          fi
+          if [ -n "$ref" ] && ! [[ "$ref" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+            echo "::error::not a plain ref: $ref"; exit 1
+          fi
+          if [ -n "$version" ]; then ref=""; fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "first-use: version='$version' ref='$ref'"
+
+  first-use:
+    name: make first-use ${{ needs.resolve.outputs.version && format('VERSION={0}', needs.resolve.outputs.version) || format('REF={0}', needs.resolve.outputs.ref) }}
+    needs: resolve
+    runs-on: ubuntu-latest
+    steps:
+      # The test tools come from the default branch (or the dispatched one);
+      # what they test is the version or ref.
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: make first-use
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+          REF: ${{ needs.resolve.outputs.ref }}
+        run: |
+          if [ -n "$VERSION" ]; then make first-use VERSION="$VERSION" PYTHON=python
+          else make first-use REF="$REF" PYTHON=python; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: first-use-report-${{ github.run_id }}
+          path: .first-use/
+          if-no-files-found: error
+
+  action:
+    # The GitHub Action as a first user references it, uses: ...@v<version>:
+    # the action.yml of that tag, installing the verifier of that version.
+    name: GitHub Action v${{ needs.resolve.outputs.version }}
+    needs: resolve
+    if: needs.resolve.outputs.version != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v${{ needs.resolve.outputs.version }}
+          path: published
+
+      - name: the example journals verify
+        id: examples
+        uses: ./published
+        with:
+          journal: published/examples/*.jsonl
+          version: v${{ needs.resolve.outputs.version }}
+
+      - name: a tampered journal fails
+        id: tampered
+        uses: ./published
+        continue-on-error: true
+        with:
+          journal: published/examples/tampered/seq-mismatch.jsonl
+          version: v${{ needs.resolve.outputs.version }}
+
+      - name: outputs as documented
+        env:
+          VERDICT: ${{ steps.examples.outputs.verdict }}
+          ERRORS: ${{ steps.examples.outputs.errors }}
+          T_OUTCOME: ${{ steps.tampered.outcome }}
+          T_VERDICT: ${{ steps.tampered.outputs.verdict }}
+          T_ERRORS: ${{ steps.tampered.outputs.errors }}
+        run: |
+          set -euo pipefail
+          report() { echo "$1" | tee -a "$GITHUB_STEP_SUMMARY"; }
+          test "$VERDICT" = valid && test "$ERRORS" = 0 \
+            && report "PASS  examples/*.jsonl: verdict valid, 0 errors" \
+            || { report "FAIL  examples/*.jsonl: verdict '$VERDICT', errors '$ERRORS'"; exit 1; }
+          test "$T_OUTCOME" = failure && test "$T_VERDICT" = invalid && test "$T_ERRORS" = 1 \
+            && report "PASS  tampered/seq-mismatch.jsonl: step failed, verdict invalid, 1 error" \
+            || { report "FAIL  tampered/seq-mismatch.jsonl: outcome '$T_OUTCOME', verdict '$T_VERDICT', errors '$T_ERRORS'"; exit 1; }

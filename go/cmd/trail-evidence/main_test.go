@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"runtime/debug"
 	"strings"
 	"testing"
 )
@@ -72,7 +73,37 @@ func TestHashCommandState(t *testing.T) {
 	if code := run([]string{"profiles"}, &out, &errb); code != 0 || !strings.Contains(out.String(), "example.measurement/1") {
 		t.Errorf("profiles: %d %s", code, out.String())
 	}
-	if !strings.HasPrefix(versionString(), "0.2.0-dev") && !strings.HasPrefix(versionString(), "v") {
-		t.Errorf("version %q", versionString())
+	if v := versionString(); v == "" || strings.HasPrefix(v, "v") {
+		t.Errorf("version %q", v)
+	}
+}
+
+func TestAGoInstallBuildReportsTheModuleVersionWithoutItsLeadingV(t *testing.T) {
+	for module, want := range map[string]string{
+		"v0.2.0":                               "0.2.0",
+		"v0.3.0-rc.1":                          "0.3.0-rc.1",
+		"v0.2.1-0.20261104120000-abcdef123456": "0.2.1-0.20261104120000-abcdef123456",
+	} {
+		bi := &debug.BuildInfo{Main: debug.Module{Path: "github.com/RainerGewalt/trail-evidence/go", Version: module}}
+		if got := versionFrom("", bi); got != want {
+			t.Errorf("module version %s: got %q, want %q", module, got, want)
+		}
+	}
+}
+
+func TestAReleaseBuildReportsTheVersionGivenAtBuildTime(t *testing.T) {
+	bi := &debug.BuildInfo{Main: debug.Module{Version: "v9.9.9"}}
+	for given, want := range map[string]string{"0.2.0": "0.2.0", "v0.2.0": "0.2.0", "0.3.0-next": "0.3.0-next"} {
+		if got := versionFrom(given, bi); got != want {
+			t.Errorf("-X main.version=%s: got %q, want %q", given, got, want)
+		}
+	}
+}
+
+func TestABuildWithoutAVersionReportsTheDevVersion(t *testing.T) {
+	for _, bi := range []*debug.BuildInfo{nil, {}, {Main: debug.Module{Version: "(devel)"}}} {
+		if got := versionFrom("", bi); got != devVersion {
+			t.Errorf("build info %+v: got %q, want %q", bi, got, devVersion)
+		}
 	}
 }

@@ -79,7 +79,8 @@ how they do it. What they need from here:
   format before 1.0.
 - `trail-evidence version` is for people, not for scripts: the 0.2.0
   binary installed with `go install` prints `v0.2.0`, the release archive
-  `0.2.0`.
+  `0.2.0`. From the next release on both print the version without the
+  `v` (`CHANGELOG.md`, "Unreleased").
 
 ### L4
 

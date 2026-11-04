@@ -26,20 +26,34 @@ import (
 // version is set by the release build (.goreleaser.yaml:
 // -ldflags "-X main.version={{ .Version }}"). A binary installed with
 // `go install ...@<version>` reports the module version from its build info
-// instead; a plain `go build` from a checkout reports devVersion.
+// instead; a plain `go build` from a checkout reports devVersion, or the
+// version Go derives from the VCS state if it stamps one.
 var version = ""
 
 // devVersion names the release this source tree is preparing.
 const devVersion = "0.2.0-dev"
 
 func versionString() string {
-	if version != "" {
-		return version
+	bi, _ := debug.ReadBuildInfo()
+	return versionFrom(version, bi)
+}
+
+// versionFrom picks the version to report: the one set at build time, else
+// the module version from the build info, else devVersion. It is written
+// without the leading "v" of a tag or module version, so that a go install
+// build reports 0.2.0 like the release archive (docs/RELEASING.md).
+func versionFrom(ldflagsVersion string, bi *debug.BuildInfo) string {
+	v := ldflagsVersion
+	if v == "" && bi != nil && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+		v = bi.Main.Version
 	}
-	if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
-		return bi.Main.Version
+	if v == "" {
+		return devVersion
 	}
-	return devVersion
+	if len(v) > 1 && v[0] == 'v' && v[1] >= '0' && v[1] <= '9' {
+		return v[1:]
+	}
+	return v
 }
 
 func main() {

@@ -24,6 +24,14 @@ tagged. Until then the record format is a draft and may change.
 - The PyPI upload in the release workflow is blocking: a failed upload fails
   the release run. 0.2.0 is on PyPI since 2026-11-03.
 
+### Fixed
+
+- `trail-evidence version` of a binary installed with
+  `go install …@vX.Y.Z` printed `vX.Y.Z`, while the release archive and
+  `docs/RELEASING.md` say `X.Y.Z`. Both now print the version without the
+  leading `v`, like TrailTransfer and TrailSource. Found by
+  `make first-use VERSION=0.2.0`.
+
 ### Added
 
 - `docs/TESTING.md`, the test concept: layers L1 to L5 and tooling, where a

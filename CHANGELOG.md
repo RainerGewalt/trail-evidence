@@ -31,6 +31,9 @@ tagged. Until then the record format is a draft and may change.
   `docs/RELEASING.md` say `X.Y.Z`. Both now print the version without the
   leading `v`, like TrailTransfer and TrailSource. Found by
   `make first-use VERSION=0.2.0`.
+- README: `go run` from a checkout turns the exit codes 2 and 3 into 1; the
+  README now says so and how to build the binary for the documented exit
+  codes. Found by `make first-use REF=…`.
 
 ### Added
 

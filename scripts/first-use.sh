@@ -243,6 +243,8 @@ step_readme() {
   else
     strings+=(
       "cd go && go run ./cmd/trail-evidence"
+      "\`go run\` reports every non-zero exit code as 1"
+      "cd go && go build -o trail-evidence ./cmd/trail-evidence"
       "cd python && python3 -m trail_evidence"
       'pip install "git+https://github.com/RainerGewalt/trail-evidence#subdirectory=python"'
       "python3 -m http.server -d web"

@@ -105,7 +105,11 @@ pip install "git+https://github.com/RainerGewalt/trail-evidence#subdirectory=pyt
 ```
 
 From a checkout, without installing: `cd go && go run ./cmd/trail-evidence …`
-or `cd python && python3 -m trail_evidence …`.
+or `cd python && python3 -m trail_evidence …`. `go run` reports every
+non-zero exit code as 1; for the exit codes below (3 for incomplete, 2 for
+a usage or I/O error), build the binary with
+`cd go && go build -o trail-evidence ./cmd/trail-evidence` and run
+`go/trail-evidence`.
 
 ## Verify a journal
 

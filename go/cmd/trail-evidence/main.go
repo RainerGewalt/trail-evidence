@@ -29,8 +29,8 @@ import (
 // instead; a plain `go build` from a checkout reports devVersion.
 var version = ""
 
-// devVersion names the release this source tree is preparing.
-const devVersion = "0.2.0-dev"
+// devVersion names the next release after the last tag (docs/RELEASING.md).
+const devVersion = "0.3.0-dev"
 
 func versionString() string {
 	if version != "" {

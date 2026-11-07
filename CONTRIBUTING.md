@@ -63,5 +63,6 @@ New reason codes go into `schema/reason-codes.json`; run
 
 The key under `testdata/keys/` is a published test key (RFC 8032 test
 vector 1). Never add a real private key, token or credential to this
-repository. If you find a problem in the hashing or signature logic, please
-report it privately to the maintainer before opening a public issue.
+repository. If you find a problem in the hashing or signature logic, report
+it privately as described in [SECURITY.md](SECURITY.md), not in a public
+issue.

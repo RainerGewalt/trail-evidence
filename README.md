@@ -481,6 +481,18 @@ profile schema, run `scripts/profiles.py --write`. `go test` fails when the comm
 are out of date. See [CONTRIBUTING.md](CONTRIBUTING.md) and
 [CHANGELOG.md](CHANGELOG.md).
 
+## Feedback and support
+
+Tried it? An
+[evaluation report](https://github.com/RainerGewalt/trail-evidence/issues/new?template=evaluation-report.yml)
+helps more than anything else: what you ran, whether it worked, and what got
+in the way. A first run that failed is as useful as one that worked. Bugs can
+also go into a plain issue. Problems in the hashing or signature logic should
+be reported privately first, see [CONTRIBUTING.md](CONTRIBUTING.md#security).
+
+Support is best effort: issues are read and answered, but there is no
+guaranteed response time, no support contract, no SLA and no paid support.
+
 ## License
 
 Apache License 2.0, see [LICENSE](LICENSE). Copyright 2026 Florian Przybylak.

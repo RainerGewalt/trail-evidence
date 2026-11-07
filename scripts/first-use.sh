@@ -141,11 +141,16 @@ for case in cases:
     args = ["verify", "examples/tampered/" + case["file"]]
     if case.get("pubkey"):
         args += ["--pubkey", "examples/tampered/" + case["pubkey"]]
+    if case.get("require_signatures"):
+        args.append("--require-signatures")
+    if case.get("allow_incomplete"):
+        args.append("--allow-incomplete")
     codes = [subprocess.run([v] + args, capture_output=True).returncode for v in sys.argv[1:]]
     if any(c != case["exit_code"] for c in codes):
         print("    %s: exit codes %s, want %s" % (case["file"], codes, case["exit_code"]))
         bad += 1
-print("    ok: %d tampered examples, same exit code in both verifiers" % len(cases))
+if not bad:
+    print("    ok: %d cases, the expected exit code in both verifiers" % len(cases))
 sys.exit(1 if bad else 0)
 EOF
 

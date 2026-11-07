@@ -72,7 +72,7 @@ func TestHashCommandState(t *testing.T) {
 	if code := run([]string{"profiles"}, &out, &errb); code != 0 || !strings.Contains(out.String(), "example.measurement/1") {
 		t.Errorf("profiles: %d %s", code, out.String())
 	}
-	if !strings.HasPrefix(versionString(), "0.2.0-dev") && !strings.HasPrefix(versionString(), "v") {
+	if !strings.HasPrefix(versionString(), "0.3.0-dev") && !strings.HasPrefix(versionString(), "v") {
 		t.Errorf("version %q", versionString())
 	}
 }

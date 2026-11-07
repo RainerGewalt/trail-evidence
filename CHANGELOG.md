@@ -6,6 +6,11 @@ tagged. Until then the record format is a draft and may change.
 
 ## Unreleased
 
+## 0.2.1 - 2026-11-07
+
+A patch release for the reason-code catalog. No change to the record
+format, the vectors or the verifiers.
+
 ### Changed
 
 - README states the released version, the install paths and which
@@ -19,14 +24,23 @@ tagged. Until then the record format is a draft and may change.
   missing `favicon.ico`; the page still makes no request besides the two
   example journals.
 - The PyPI upload in the release workflow is blocking: a failed upload fails
-  the release run. 0.2.0 is on PyPI since 2026-11-03.
+  the release run. 0.2.0 is on PyPI since 2026-11-03. `docs/RELEASING.md`
+  said the opposite and is corrected.
+- The Go CLI and the Python package report 0.2.1; a Go build from a
+  checkout reports `0.3.0-dev`, the next release, as `docs/RELEASING.md`
+  describes.
 
 ### Added
 
 - Reason code `source.subscription_stalled` (error), additive: a source
   bridge saw neither data nor keep-alive within the agreed keep-alive
   window while the session still answered; it rebuilds the subscription
-  and declares the missed interval with `common.gap`.
+  and declares the missed interval with `common.gap`. TrailSource 0.1
+  already emits it.
+- `scripts/first-use.sh`: walks through the README from a fresh clone, or
+  with `RELEASE=x.y.z` against the published tag, release archive,
+  `go install`, PyPI and the browser verifier, and stops at the first step
+  that does not behave as documented. Testing levels in `docs/TESTING.md`.
 
 ## 0.2.0 - 2026-11-03
 

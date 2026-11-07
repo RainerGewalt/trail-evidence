@@ -17,6 +17,8 @@ version number.
 3. Run the full check locally (see `CONTRIBUTING.md`), plus
    `goreleaser check` and, if GoReleaser is installed,
    `goreleaser release --snapshot --clean` to see the archives in `dist/`.
+4. Run the first-use check from a fresh clone of the release commit:
+   `scripts/first-use.sh` (`docs/TESTING.md`, L5). No tag without a pass.
 
 ## Tag
 
@@ -39,11 +41,18 @@ git push origin vX.Y.Z
   `trail-evidence-py verify` on an example journal and keeps `python/dist/`
   as the workflow artifact `python-dist-vX.Y.Z`;
 - uploads that artifact to PyPI through trusted publishing (job `pypi`,
-  below). A failed upload is reported in the log and the job summary and
-  does not fail the release.
+  below). A failed upload fails the job, so a green release run means the
+  package is on PyPI.
 
 The GitHub Action needs no extra step: `uses: RainerGewalt/trail-evidence@vX.Y.Z`
 resolves the same tag and installs the matching CLI.
+
+## After the tag
+
+Run `RELEASE=X.Y.Z scripts/first-use.sh`. It checks what was published: the
+tag, the release archive against `checksums.txt`, `go install …@vX.Y.Z`,
+`pip install trail-evidence==X.Y.Z` and the browser verifier on GitHub
+Pages. If it fails, a patch release follows.
 
 ## PyPI (trusted publishing)
 

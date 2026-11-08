@@ -35,6 +35,7 @@
   const covChain = $("cov-chain");
   const covSignatures = $("cov-signatures");
   const covProfiles = $("cov-profiles");
+  const covCompleteness = $("cov-completeness");
   const cryptoNote = $("crypto-note");
   const counters = $("counters");
   const streamsList = $("streams");
@@ -226,38 +227,12 @@
     return node;
   }
 
-  // The verdict is one word; this says which properties produced it and
-  // which it says nothing about. Wording mirrors the Go and Python summaries.
   function renderCoverage(report, keyGiven) {
-    const n = (x) => `${x} record${x === 1 ? "" : "s"}`;
-    const failing = report.states.invalid;
-    const unknown = report.states.unknown + report.states.outside_scope;
-    let chain = `Checked: every record's hashes were recomputed and every link and sequence number was followed`;
-    if (failing > 0) chain += `; ${n(failing)} fail.`;
-    else if (unknown > 0) chain += `; ${n(unknown)} could not be placed in the chain.`;
-    else chain += `; all ${n(report.records)} match.`;
-    covChain.textContent = chain;
-
-    let sig;
-    if (report.signature_check === "unavailable") {
-      sig = `Not checked: this browser's WebCrypto has no Ed25519. ${n(report.signed_records)} carry a signature.`;
-    } else if (report.signed_records === 0) {
-      sig = "None: no record carries a signature, so nothing here says who produced the journal.";
-    } else if (!keyGiven) {
-      sig = `Not checked: ${n(report.signed_records)} carry a signature, but no public key was entered. Without it the verdict says nothing about who produced the journal.`;
-    } else {
-      sig = `Checked against the key you entered: ${report.signatures_verified} of ${n(report.signed_records)} verified`;
-      sig += report.unsigned_records > 0 ? `; ${n(report.unsigned_records)} carry no signature.` : ".";
-      sig += " The key binds the chain to its holder only if you trust where the key came from.";
-    }
-    covSignatures.textContent = sig;
-
-    const ps = report.profile_states;
-    const parts = [];
-    if (ps.valid + ps.invalid > 0) parts.push(`${n(ps.valid + ps.invalid)} checked against a profile this page knows${ps.invalid > 0 ? ` (${ps.invalid} failed)` : ""}`);
-    if (ps.outside_scope > 0) parts.push(`${n(ps.outside_scope)} name a profile this page does not know, so their payload was not checked`);
-    if (ps.none > 0) parts.push(`${n(ps.none)} name no profile`);
-    covProfiles.textContent = (parts.length ? parts.join("; ") : "No record names a profile") + ". A profile check covers the shape of the payload, not whether its values are true.";
+    const c = te.coverage(report, keyGiven);
+    covChain.textContent = c.chain;
+    covSignatures.textContent = c.signatures;
+    covProfiles.textContent = c.profiles;
+    covCompleteness.textContent = c.completeness;
   }
 
   function render(report, keyGiven) {

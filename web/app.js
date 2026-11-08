@@ -32,6 +32,10 @@
   const verdictLabel = $("verdict-label");
   const verdictSummary = $("verdict-summary");
   const signatureNote = $("signature-note");
+  const covChain = $("cov-chain");
+  const covSignatures = $("cov-signatures");
+  const covProfiles = $("cov-profiles");
+  const covCompleteness = $("cov-completeness");
   const cryptoNote = $("crypto-note");
   const counters = $("counters");
   const streamsList = $("streams");
@@ -223,6 +227,14 @@
     return node;
   }
 
+  function renderCoverage(report, keyGiven) {
+    const c = te.coverage(report, keyGiven);
+    covChain.textContent = c.chain;
+    covSignatures.textContent = c.signatures;
+    covProfiles.textContent = c.profiles;
+    covCompleteness.textContent = c.completeness;
+  }
+
   function render(report, keyGiven) {
     result.hidden = false;
     // incomplete keeps its own, non-green look even when it is allowed.
@@ -245,6 +257,8 @@
       signatureNote.hidden = false;
       signatureNote.textContent = `${report.unsigned_records} record(s) carry no signature. Tick "Require a signature on every record" to report them as signature_invalid.`;
     }
+
+    renderCoverage(report, keyGiven);
 
     // Counters
     stateCounters.replaceChildren();

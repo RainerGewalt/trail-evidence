@@ -476,7 +476,63 @@ async function testProfiles() {
   console.log(`  ${examples} example payloads and ${journals} journal(s) agree`);
 }
 
+// coverage(): the chain row follows the findings, not the invalid count, and
+// the prose never claims more than the check did.
+async function coverageTests() {
+  const ex = (f) => read(path.join(HERE, "..", "..", "examples", f));
+  const st = (f) => read(path.join(STREAMS, f));
+  const key = te.parsePublicKey(read(path.join(HERE, "..", "..", "testdata", "keys", "test-ed25519.pub")).trim());
+  const has = (s, part, msg) => check(s.includes(part), `${msg}: expected "${part}" in "${s}"`);
+  const lacks = (s, part, msg) => check(!s.includes(part), `${msg}: did not expect "${part}" in "${s}"`);
+
+  let c = te.coverage(await te.verifyStream(ex("transfer-worker.jsonl")), false);
+  has(c.chain, "Checked for all 4 records", "valid unsigned: chain checked for all");
+  has(c.chain, "they hold together", "valid unsigned: chain holds");
+  lacks(c.chain, "fail", "valid unsigned: no chain failure");
+  has(c.signatures, "None: no record carries a signature", "valid unsigned: no signatures");
+  has(c.profiles, "4 records name no profile", "valid unsigned: no profiles");
+  has(c.completeness, "internally consistent", "completeness names internal consistency");
+  has(c.completeness, "re-sealed", "completeness names re-sealing");
+  lacks(c.completeness, "not changed", "completeness does not claim immutability");
+
+  c = te.coverage(await te.verifyStream(ex("tampered/hash-mismatch.jsonl")), false);
+  has(c.chain, "1 record fail that check", "hash mismatch: one chain failure");
+
+  c = te.coverage(await te.verifyStream(ex("tampered/signature-invalid.jsonl"), { publicKey: key }), true);
+  lacks(c.chain, "fail", "signature invalid: chain row shows no failure");
+  has(c.chain, "they hold together", "signature invalid: chain holds");
+  has(c.signatures, "2 failed", "signature invalid: signature row shows the failures");
+  has(c.signatures, "Checked against the key", "signature invalid: checked with key");
+
+  c = te.coverage(await te.verifyStream(st("signed.jsonl")), false);
+  has(c.signatures, "Not checked: 3 records carry a signature, but no public key", "signed without key: not checked");
+  lacks(c.signatures, "verified", "signed without key: nothing verified");
+
+  c = te.coverage(await te.verifyStream(st("signed.jsonl"), { publicKey: key, requireSignatures: true }), true);
+  has(c.signatures, "3 of 3 records verified", "signed with key: all verified");
+
+  c = te.coverage(await te.verifyStream(ex("tampered/outside-scope.jsonl")), false);
+  has(c.chain, " of ", "outside scope: checked for a subset");
+  has(c.chain, "name another format or major version and were not checked", "outside scope: unchecked records named");
+
+  c = te.coverage(await te.verifyStream(ex("tampered/seq-gap.jsonl")), false);
+  has(c.chain, "link to a predecessor that is not in this journal", "seq gap: unknown predecessor named");
+  lacks(c.chain, "fail", "seq gap: not a chain failure");
+
+  c = te.coverage(await te.verifyStream(st("profile-states.jsonl")), false);
+  lacks(c.chain, "fail", "profile invalid: chain row shows no failure");
+  has(c.chain, "they hold together", "profile invalid: chain holds");
+  has(c.profiles, "(1 failed)", "profile invalid: profile row shows the failure");
+
+  c = te.coverage(await te.verifyStream(st("profile-tampered.jsonl")), false);
+  has(c.chain, "fail that check", "profile tampered (edited payload): chain failure shown");
+
+  c = te.coverage(await te.verifyStream(st("profile-unknown.jsonl")), false);
+  has(c.profiles, "name a profile this page does not know", "profile unknown: named as unchecked");
+}
+
 async function main() {
+  await coverageTests();
   const args = process.argv.slice(2);
   if (args[0] === "report" || args[0] === "verify") {
     process.exit(await reportMode(args.slice(1)));

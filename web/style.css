@@ -181,6 +181,16 @@ button.secondary { font-size: 0.9rem; padding: 0.3rem 0.8rem; margin-bottom: 0.5
   border: 1px solid var(--notice-border);
 }
 
+.coverage { margin: 0; display: grid; gap: 0.5rem; }
+.coverage div {
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+.coverage dt { font-weight: 600; margin: 0 0 0.15rem; }
+.coverage dd { margin: 0; color: var(--muted); font-size: 0.92rem; line-height: 1.5; }
+
 .counters {
   list-style: none;
   margin: 0;

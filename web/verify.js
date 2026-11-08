@@ -1245,6 +1245,55 @@
     return o;
   }
 
+  // coverage says, in prose, which properties produced the verdict and which
+  // it says nothing about. keyGiven: whether a public key was supplied. The
+  // chain row is derived from the findings, not from the invalid count, so a
+  // record that is invalid only because of its signature or profile does not
+  // appear as a chain failure. Records outside scope were not checked at all.
+  function coverage(report, keyGiven) {
+    const n = (x) => x + " record" + (x === 1 ? "" : "s");
+    const chainRecords = new Set();
+    let signatureFailures = 0;
+    for (const f of report.findings) {
+      if (f.class === HASH_MISMATCH || f.class === CHAIN_BREAK || f.class === SEQ_MISMATCH || f.class === SCHEMA_INVALID) chainRecords.add(f.index);
+      if (f.class === SIGNATURE_INVALID) signatureFailures++;
+    }
+    const outside = report.states[OUTSIDE];
+    const unknown = report.states[UNKNOWN];
+    const checked = report.records - outside;
+    let chain;
+    if (checked === 0) {
+      chain = "Nothing checked: every record names another format or major version.";
+    } else {
+      chain = "Checked for " + (outside > 0 ? n(checked) + " of " + report.records : "all " + n(checked)) + ": hashes recomputed, links and sequence numbers followed";
+      if (chainRecords.size > 0) chain += "; " + n(chainRecords.size) + " fail that check.";
+      else if (unknown > 0) chain += "; " + n(unknown) + " link to a predecessor that is not in this journal, the rest hold together.";
+      else chain += "; they hold together.";
+      if (outside > 0) chain += " " + n(outside) + " name another format or major version and were not checked.";
+    }
+    let signatures;
+    if (report.signature_check === "unavailable") {
+      signatures = "Not checked: this browser's WebCrypto has no Ed25519. " + n(report.signed_records) + " carry a signature.";
+    } else if (report.signed_records === 0 && signatureFailures === 0) {
+      signatures = "None: no record carries a signature, so nothing here says who produced the journal.";
+    } else if (!keyGiven) {
+      signatures = "Not checked: " + n(report.signed_records) + " carry a signature, but no public key was entered. Without it the verdict says nothing about who produced the journal.";
+    } else {
+      signatures = "Checked against the key you entered: " + report.signatures_verified + " of " + n(report.signed_records) + " verified";
+      if (signatureFailures > 0) signatures += ", " + signatureFailures + " failed";
+      if (report.unsigned_records > 0) signatures += "; " + n(report.unsigned_records) + " carry no signature";
+      signatures += ". A verified signature binds the record to the key's holder only if you trust where the key came from.";
+    }
+    const ps = report.profile_states;
+    const parts = [];
+    if (ps[VALID] + ps[INVALID] > 0) parts.push(n(ps[VALID] + ps[INVALID]) + " checked against a profile this page knows" + (ps[INVALID] > 0 ? " (" + ps[INVALID] + " failed)" : ""));
+    if (ps[OUTSIDE] > 0) parts.push(n(ps[OUTSIDE]) + " name a profile this page does not know, so their payload was not checked");
+    if (ps[PROFILE_NONE] > 0) parts.push(n(ps[PROFILE_NONE]) + " name no profile");
+    const profiles = (parts.length ? parts.join("; ") : "No record names a profile") + ". A profile check covers the shape of the payload, not whether its values are true.";
+    const completeness = "Not shown by this check. A passing chain means the journal is internally consistent: each record matches its own hashes and links to the one before it. It does not show that nobody re-sealed the whole chain, that the journal is complete, that an event happened as described, or who produced it unless a signature is verified against a key you trust.";
+    return { chain, signatures, profiles, completeness };
+  }
+
   return {
     SCHEMA, HASH_PREFIX, GENESIS_HASH, SIGNATURE_ALG, MAX_SEQ,
     SCHEMA_INVALID, HASH_MISMATCH, CHAIN_BREAK, SEQ_MISMATCH, SIGNATURE_INVALID, PROFILE_INVALID,
@@ -1255,7 +1304,7 @@
     canonicalize, canonicalBytes, escapeString, formatNumber,
     hashBytes, keyId, computeHashes,
     parsePublicKey, verifySignature, ed25519Available, Ed25519Unavailable, cryptoAvailable,
-    parseSeq, decodeProblems, validateStructure, checkRecord, verifyRecord, verifyStream, summary, exitCode, reportToJSON, findingToJSON,
+    parseSeq, decodeProblems, validateStructure, checkRecord, verifyRecord, verifyStream, summary, coverage, exitCode, reportToJSON, findingToJSON,
     profiles, validateProfilePayload, compileProfileSchema,
     json: { memberSpans, arrayItems, scanValue, unsafeIntegers },
     bytes: { hex, fromHex, base64urlDecode },

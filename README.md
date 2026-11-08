@@ -3,33 +3,22 @@
        alt="Trail Evidence logo: three chained records, the last one checked." />
 </p>
 
-<h1 align="center">trail-evidence</h1>
+<h1 align="center">Trail Evidence</h1>
 
 **Status: v0.2.1, released 2026-11-07. The format may still change before
 1.0; changes are listed in [CHANGELOG.md](CHANGELOG.md).**
 
-A Trail Evidence Record is one JSON object that describes one event a system
-wants to be able to prove later, chained to the previous record by a hash
-and optionally signed. A journal is a JSON Lines file of such records. This
-repository is the shared contract for that record: the specification, a JSON
-Schema, test vectors, a registry of payload profiles, and verifiers in Go,
-Python and JavaScript that produce identical reports.
+**Is this event journal intact?** Drop a `.jsonl` journal on the browser
+verifier, or run one command, and get a verdict: `valid`, `invalid` or
+`incomplete`, with the first record that breaks the chain, the line it is on
+and the recorded versus the recomputed hash. The same check exists in Go,
+Python and JavaScript, and all three agree on every test vector.
 
-The systems around the Trail ecosystem each keep some kind of evidence: a
-transfer worker writes a job journal, a source bridge emits envelopes with
-an audit block, a broker logs access decisions, an ML pipeline stores run
-records. One record shape means one verifier for all of them.
-`producer.kind` says where a record came from, `event_type` what happened,
-`payload` carries the domain data unchanged, and `profile` names the schema
-of that payload, which the producer defines and registers in
-[`profiles/`](profiles/README.md). Producer kinds: `transfer-worker`, `source-bridge`, `broker`,
-`ml-pipeline`, `persistence`, `other`. Two producers emit this format
-today: [TrailTransfer](https://github.com/RainerGewalt/trailtransfer)
-0.1.0 writes its job journal as `trail.evidence/1` (still with the integer
-`seq` of format 0.1, which 0.x verifiers accept with a notice), and
-[TrailSource](https://github.com/RainerGewalt/trailsource) 0.1.0 writes
-format 0.2. TrailMQ does not
-emit it today. `SPEC.md` section 8 describes the mapping for each kind.
+Trail Evidence is the record format behind that check: one JSON object per
+event, chained to the previous one by a hash and optionally signed. Any
+program can write it; today [TrailTransfer](https://github.com/RainerGewalt/trailtransfer)
+and [TrailSource](https://github.com/RainerGewalt/trailsource) do. The
+verifier does not need to know what produced the journal.
 
 ## Try in the browser
 
@@ -66,6 +55,31 @@ than as failed.
 
 `.github/workflows/pages.yml` publishes the page from `web/` on every push
 to `main` that touches it. Locally: `python3 -m http.server -d web`.
+
+## What a record is
+
+A Trail Evidence Record is one JSON object that describes one event a system
+wants to be able to prove later, chained to the previous record by a hash
+and optionally signed. A journal is a JSON Lines file of such records. This
+repository is the shared contract for that record: the specification, a JSON
+Schema, test vectors, a registry of payload profiles, and verifiers in Go,
+Python and JavaScript that produce identical reports.
+
+The systems around the Trail ecosystem each keep some kind of evidence: a
+transfer worker writes a job journal, a source bridge emits envelopes with
+an audit block, a broker logs access decisions, an ML pipeline stores run
+records. One record shape means one verifier for all of them.
+`producer.kind` says where a record came from, `event_type` what happened,
+`payload` carries the domain data unchanged, and `profile` names the schema
+of that payload, which the producer defines and registers in
+[`profiles/`](profiles/README.md). Producer kinds: `transfer-worker`, `source-bridge`, `broker`,
+`ml-pipeline`, `persistence`, `other`. Two producers emit this format
+today: [TrailTransfer](https://github.com/RainerGewalt/trailtransfer)
+0.1.x writes its job journal as `trail.evidence/1` (still with the integer
+`seq` of format 0.1, which 0.x verifiers accept with a notice), and
+[TrailSource](https://github.com/RainerGewalt/trailsource) 0.1.x writes
+format 0.2. TrailMQ does not
+emit it today. `SPEC.md` section 8 describes the mapping for each kind.
 
 ## Install
 

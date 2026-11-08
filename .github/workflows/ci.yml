@@ -33,7 +33,10 @@ jobs:
 
   python:
     name: Python ${{ matrix.python }}
-    runs-on: ubuntu-latest
+    # ubuntu-latest moved to Ubuntu 26.04 on 2026-11-08, and setup-python has
+    # no 3.9 build for it. 3.9 is the oldest version the package supports, so
+    # this job stays on 24.04 until 3.9 leaves the matrix.
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         python: ["3.9", "3.12", "3.13"]

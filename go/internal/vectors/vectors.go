@@ -634,6 +634,9 @@ func buildStreams(priv ed25519.PrivateKey) []StreamCase {
 	cases = append(cases, buildSeqStreams()...)
 	cases = append(cases, buildScopeStreams()...)
 	cases = append(cases, buildProfileStreams()...)
+	cases = append(cases, buildReadingRuleStreams()...)
+	cases = append(cases, buildLimitStreams()...)
+	cases = append(cases, buildEmptyStreams()...)
 	return cases
 }
 
@@ -1024,15 +1027,16 @@ func withVerdicts(cases []StreamCase) []StreamCase {
 			return n
 		}
 		unknownProfiles := c.RequireKnownProfiles && count(c.ProfileStates, evidence.StateOutsideScope) > 0
+		empty := len(c.States) == 0
 		switch {
 		case count(c.States, evidence.StateInvalid) > 0:
 			c.Verdict = evidence.VerdictInvalid
-		case count(c.States, evidence.StateUnknown)+count(c.States, evidence.StateOutsideScope) > 0 || unknownProfiles:
+		case empty || count(c.States, evidence.StateUnknown)+count(c.States, evidence.StateOutsideScope) > 0 || unknownProfiles:
 			c.Verdict = evidence.VerdictIncomplete
 		default:
 			c.Verdict = evidence.VerdictValid
 		}
-		ok := c.Verdict == evidence.VerdictValid || (c.Verdict == evidence.VerdictIncomplete && c.AllowIncomplete && !unknownProfiles)
+		ok := c.Verdict == evidence.VerdictValid || (c.Verdict == evidence.VerdictIncomplete && c.AllowIncomplete && !unknownProfiles && !empty)
 		if ok != c.OK {
 			panic(fmt.Sprintf("case %s: ok %v contradicts verdict %s and the options", c.File, c.OK, c.Verdict))
 		}
@@ -1074,7 +1078,11 @@ func Files(out Output) map[string][]byte {
 		"testdata/keys/test-ed25519.pub":  []byte(TestKeyPublicHex + "\n"),
 	}
 	for _, c := range out.Streams {
-		files["testdata/streams/"+c.File] = []byte(strings.Join(c.Lines, "\n") + "\n")
+		content := []byte(strings.Join(c.Lines, "\n") + "\n")
+		if c.Lines == nil {
+			content = []byte{} // empty.jsonl: 0 bytes
+		}
+		files["testdata/streams/"+c.File] = content
 	}
 	for _, j := range out.Examples {
 		files["examples/"+j.File] = []byte(strings.Join(j.Lines, "\n") + "\n")

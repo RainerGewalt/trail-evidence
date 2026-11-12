@@ -39,7 +39,8 @@ jobs:
     runs-on: ubuntu-24.04
     strategy:
       matrix:
-        python: ["3.9", "3.12", "3.13"]
+        # Every version the classifiers in python/pyproject.toml name.
+        python: ["3.9", "3.10", "3.11", "3.12", "3.13"]
     defaults:
       run:
         working-directory: python
@@ -89,6 +90,19 @@ jobs:
       - run: node web/test/run.mjs report examples/transfer-worker.jsonl
       - run: node web/test/run.mjs report testdata/streams/signed.jsonl --pubkey testdata/keys/test-ed25519.pub --require-signatures
       - run: node web/test/run.mjs report profiles/example.measurement/1.journal.jsonl --require-known-profiles
+
+  web-browser:
+    name: Browser verifier page in headless Chrome
+    # The page with real key and file-input events (docs/TESTING.md, L4).
+    # Pinned to 24.04, whose image ships Google Chrome.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: google-chrome --version
+      - run: node web/test/browser.mjs
 
   crosscheck:
     name: Go vs Python vs JavaScript crosscheck

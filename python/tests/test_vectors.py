@@ -90,7 +90,9 @@ class StreamFixtures(unittest.TestCase):
                 pub = None
                 if case.get("pubkey"):
                     pub = parse_public_key(os.path.join(directory, case["pubkey"]))
-                with open(os.path.join(directory, case["file"]), "r", encoding="utf-8") as fh:
+                # Binary mode, like the CLI: lines end at a line feed only and
+                # a line that is not UTF-8 is one invalid record (SPEC.md section 2).
+                with open(os.path.join(directory, case["file"]), "rb") as fh:
                     report = verify_stream(fh, pub, case.get("require_signatures", False), allow, known)
                 self.assertEqual(report.ok, case["ok"], report.summary())
                 self.assertEqual(report.verdict, case["verdict"])
@@ -297,6 +299,10 @@ class Profiles(unittest.TestCase):
                 registry.compile_schema(doc)
 
 
+KEY = parse_public_key(os.path.join(ROOT, "testdata", "keys", "test-ed25519.pub"))
+OTHER_KEY = bytes.fromhex("2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12")  # seed 0x42 repeated; signed no fixture
+
+
 class Summary(unittest.TestCase):
     def test_lines(self):
         cases = [
@@ -305,11 +311,20 @@ class Summary(unittest.TestCase):
             ("seq-gap.jsonl", {"allow_incomplete": True}, "INCOMPLETE (allowed): 4 record(s) in 1 stream(s), no invalid record, 1 unknown"),
             ("outside-scope.jsonl", {}, "INCOMPLETE: 4 record(s) in 1 stream(s), hash chain intact, 2 outside scope"),
             ("seq-mismatch.jsonl", {}, "INVALID: 3 record(s) in 1 stream(s), 1 error(s)"),
-            ("profile-unknown.jsonl", {}, "VALID: 3 record(s) in 1 stream(s), hash chain intact, 2 with unknown profile"),
-            ("profile-unknown.jsonl", {"require_known_profiles": True}, "INCOMPLETE: 3 record(s) in 1 stream(s), hash chain intact, 2 with unknown profile"),
+            ("profile-unknown.jsonl", {}, "VALID: 3 record(s) in 1 stream(s), hash chain intact, 2 with unknown profile (payload not checked)"),
+            ("profile-unknown.jsonl", {"require_known_profiles": True}, "INCOMPLETE: 3 record(s) in 1 stream(s), hash chain intact, 2 with unknown profile (payload not checked)"),
+            # What was not checked, word for word as in Go and JavaScript.
+            ("signed.jsonl", {}, "VALID: 3 record(s) in 1 stream(s), hash chain intact, 3 signed record(s), signatures not checked (no key)"),
+            ("signed.jsonl", {"public_key": KEY, "require_signatures": True}, "VALID: 3 record(s) in 1 stream(s), hash chain intact, 3 signed record(s), 3 signature(s) verified"),
+            ("signatures-stripped.jsonl", {"public_key": KEY}, "VALID: 3 record(s) in 1 stream(s), hash chain intact, no record is signed"),
+            # Every signature fails with another producer's key: checked, none verified.
+            ("signed.jsonl", {"public_key": OTHER_KEY}, "INVALID: 3 record(s) in 1 stream(s), 3 error(s), 3 signed record(s), 0 signature(s) verified"),
+            ("signature-invalid.jsonl", {"public_key": KEY, "require_signatures": True}, "INVALID: 3 record(s) in 1 stream(s), 2 error(s), 2 signed record(s), 1 signature(s) verified, 1 unsigned record(s)"),
+            ("../../examples/tampered/signature-invalid.jsonl", {}, "VALID: 4 record(s) in 1 stream(s), hash chain intact, 4 signed record(s), signatures not checked (no key)"),
+            ("../../examples/tampered/signature-invalid.jsonl", {"public_key": KEY}, "INVALID: 4 record(s) in 1 stream(s), 2 error(s), 4 signed record(s), 2 signature(s) verified"),
         ]
         for name, opts, want in cases:
-            with open(os.path.join(STREAMS, name), "r", encoding="utf-8") as fh:
+            with open(os.path.join(STREAMS, name), "rb") as fh:
                 self.assertEqual(verify_stream(fh, **opts).summary(), want)
 
     def test_cli_exit_codes(self):
@@ -324,6 +339,63 @@ class Summary(unittest.TestCase):
             with self.subTest(args):
                 with contextlib.redirect_stdout(io.StringIO()):
                     self.assertEqual(main(["verify", os.path.join(STREAMS, args[0])] + args[1:]), want)
+
+
+class InputErrors(unittest.TestCase):
+    """A journal that cannot be read gets no verdict and no report (exit 2);
+    an empty journal is incomplete, also with --allow-incomplete (SPEC.md 6.4)."""
+
+    def run_cli(self, args):
+        from trail_evidence.__main__ import main
+        import contextlib
+        import io
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(["verify"] + args)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_read_errors(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            unreadable = os.path.join(d, "unreadable.jsonl")
+            with open(unreadable, "w") as fh:
+                fh.write("{}\n")
+            os.chmod(unreadable, 0)
+            paths = {"directory": d, "missing file": os.path.join(d, "missing.jsonl")}
+            try:
+                open(unreadable, "rb").close()  # running as root: permissions do not apply
+            except OSError:
+                paths["file without read permission"] = unreadable
+            for name, path in paths.items():
+                for extra in ([], ["--json"], ["--allow-incomplete", "--json"]):
+                    with self.subTest(name, extra=extra):
+                        code, out, err = self.run_cli([path] + extra)
+                        self.assertEqual((code, out), (2, ""))
+                        self.assertTrue(err)
+
+    def test_read_error_mid_journal(self):
+        def lines():
+            with open(os.path.join(EXAMPLES, "transfer-worker.jsonl"), "rb") as fh:
+                yield fh.readline()
+            raise OSError("disk read failed")
+        with self.assertRaises(OSError):
+            verify_stream(lines(), allow_incomplete=True)
+
+    def test_empty_journal(self):
+        import tempfile
+        for content in (b"", b"\n \n\t\r\n"):
+            for allow in (False, True):
+                with self.subTest(content=content, allow=allow):
+                    report = verify_stream(iter(content.splitlines(keepends=True)), allow_incomplete=allow)
+                    self.assertEqual((report.ok, report.verdict, report.exit_code()), (False, rec.VERDICT_INCOMPLETE, 3))
+                    self.assertEqual(report.summary(), "INCOMPLETE: 0 record(s) in 0 stream(s), no record: nothing was verified")
+        with tempfile.TemporaryDirectory() as d:
+            empty = os.path.join(d, "empty.jsonl")
+            open(empty, "wb").close()
+            for extra in ([], ["--allow-incomplete"]):
+                code, out, _ = self.run_cli([empty] + extra)
+                self.assertEqual(code, 3)
+                self.assertTrue(out.startswith("INCOMPLETE: 0 record(s)"), out)
 
 
 if __name__ == "__main__":

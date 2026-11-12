@@ -27,10 +27,12 @@ Every record gets a state: `valid`, `invalid`, `unknown` (its predecessor is
 not in the file) or `outside_scope` (another format or major version), and a
 profile state. The journal gets the verdict `valid` (exit code 0), `invalid`
 (1) or `incomplete` (3: no record invalid, but one unknown or outside the
-scope). `--allow-incomplete` accepts incomplete journals (exit code 0), for
-logs known to be incomplete such as rotated ones; `--require-known-profiles`
+scope, or no record at all). `--allow-incomplete` accepts incomplete
+journals (exit code 0), for logs known to be incomplete such as rotated
+ones, but not a journal without any record; `--require-known-profiles`
 counts records with an unknown profile as incomplete. Exit code 2 is a usage
-or I/O error. `python -m trail_evidence` is the same CLI.
+error or a journal that cannot be read, with no report. `python -m
+trail_evidence` is the same CLI.
 
 ```python
 from trail_evidence import seal, sign, verify_stream, GENESIS_HASH, NO_POLICY
@@ -45,7 +47,7 @@ record = {
 }
 seal(record, GENESIS_HASH)
 sign(record, seed_bytes)            # optional
-with open("journal.jsonl") as fh:
+with open("journal.jsonl", "rb") as fh:    # binary: lines end at \n only
     report = verify_stream(fh, public_key_bytes)
 print(report.summary(), report.verdict, report.exit_code())
 print([(r.index, r.state, r.profile_state) for r in report.results])

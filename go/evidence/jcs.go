@@ -125,19 +125,3 @@ func computeHashes(obj map[string]json.RawMessage) (Hashes, error) {
 	h.ChainHash = HashBytes(cj)
 	return h, nil
 }
-
-func decodeObject(raw []byte) (map[string]json.RawMessage, error) {
-	var obj map[string]json.RawMessage
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	if err := dec.Decode(&obj); err != nil {
-		return nil, fmt.Errorf("invalid JSON: %w", err)
-	}
-	if obj == nil {
-		return nil, fmt.Errorf("record is not a JSON object")
-	}
-	var trailing json.RawMessage
-	if err := dec.Decode(&trailing); err == nil {
-		return nil, fmt.Errorf("trailing data after record")
-	}
-	return obj, nil
-}

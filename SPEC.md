@@ -33,7 +33,30 @@ repository registers only the test profile `example.measurement/1`.
 
 - A record is a JSON object encoded in UTF-8.
 - A **journal** is a JSON Lines file: one record per line, lines separated
-  by `\n`, UTF-8, optional trailing newline. Blank lines are ignored.
+  by `\n` (LF), UTF-8, optional trailing newline. A line ends at LF only; a
+  carriage return is JSON white space and does not end a line.
+- A line is **blank** when it is empty or holds only JSON white space
+  (space, tab, carriage return). Blank lines are ignored. Every other line
+  is a record line and MUST hold exactly one JSON object (RFC 8259) under
+  these **reading rules**, which follow I-JSON (RFC 7493) where RFC 8785
+  relies on it:
+  - the line is valid UTF-8 and has no byte order mark;
+  - no object, at any depth, has two members with the same name. Names are
+    compared after their escapes are decoded, so `"a"` and `"\u0061"` are
+    the same name;
+  - no string and no member name holds an unpaired surrogate escape
+    (`"\ud800"`, or a high surrogate not followed by a low one);
+  - objects and arrays nest at most 64 levels deep; the record object is
+    level 1;
+  - nothing but JSON white space precedes or follows the object on the line.
+
+  A record line that breaks a reading rule is `schema_invalid` at step 1 of
+  6.3 and takes no part in the chain. The rules close the gaps in which two
+  correct JSON parsers read the same bytes differently: one keeps the first
+  of two members with the same name, another the last; one replaces bytes
+  that are not UTF-8, another rejects them; one stops at the end of the
+  object, another reads on. A verifier and the program that later reads the
+  journal must see the same record.
 - All hashes are SHA-256 digests written as the string `sha256:` followed by
   exactly 64 lowercase hexadecimal characters.
 - All hashed inputs are the RFC 8785 (JSON Canonicalization Scheme, JCS)
@@ -300,7 +323,7 @@ Every record also has a profile state:
 
 | Class | Severity | Record state | Meaning |
 |---|---|---|---|
-| `schema_invalid` | error | invalid | Not a JSON object, unknown member, wrong type, missing required member, `null` in a typed member, value outside its enumeration, pattern or range (including `seq`), a malformed `profile`, restart invariants violated. Reported once per record; the message lists every problem found. |
+| `schema_invalid` | error | invalid | Not a JSON object under the reading rules of section 2, unknown member, wrong type, missing required member, `null` in a typed member, value outside its enumeration, pattern or range (including `seq`), a malformed `profile`, restart invariants violated. Reported once per record; the message lists every problem found. |
 | `hash_mismatch` | error | invalid | Recomputed `content_hash` or `chain_hash` differs from the recorded one. |
 | `chain_break` | error | invalid | `prev_hash` does not link to the predecessor although the predecessor is present: `seq` is the expected one (or lower) but `prev_hash` is not the previous `chain_hash`; the first record of a stream has `seq` `"0"` but no genesis `prev_hash` and no restart; a restart's `anchor_hash` matches neither the previous segment's last `chain_hash` nor genesis. |
 | `seq_mismatch` | error | invalid | `seq` contradicts the link: it repeats or goes backwards, or `prev_hash` links to the predecessor but `seq` skips ahead (a record cannot be missing between two linked records; this is what deleting a record and re-sealing its successor looks like). |
@@ -325,8 +348,11 @@ them.
 
 For each non-empty line, in file order:
 
-1. **Parse.** If the line is not a JSON object, report `schema_invalid`;
-   the record is `invalid` and takes no part in steps 2 to 8.
+1. **Parse.** If the line is not a JSON object under the reading rules of
+   section 2 (valid UTF-8, unique member names, no unpaired surrogate, at
+   most 64 levels, nothing but white space around the object), report
+   `schema_invalid`; the record is `invalid` and takes no part in steps 2
+   to 8.
 2. **Scope.** If `schema` is a string of the form `<name>/<major>` other
    than `trail.evidence/1`, report `outside_scope`; the record is
    `outside_scope`. It takes no part in steps 3 to 8: it is not hashed, does
@@ -400,12 +426,24 @@ The journal gets one of three verdicts, from the states of its records:
 |---|---|---|
 | `valid` | Every record is `valid`. | 0 |
 | `invalid` | At least one record is `invalid`. | 1 |
-| `incomplete` | No record is `invalid`, but at least one is `unknown` or `outside_scope`. | 3 |
+| `incomplete` | No record is `invalid`, but at least one is `unknown` or `outside_scope`; or the journal has no record at all. | 3 |
+| none | The journal cannot be read to its end. | 2 |
 
 `incomplete` is a failure by default. A record removed from the middle of a
 journal, or moved out of scope by changing its `schema`, makes the journal
 `incomplete`, not `invalid` (6.6); accepting `incomplete` silently would let
-such a journal pass. Exit code 2 remains reserved for usage and I/O errors.
+such a journal pass.
+
+A journal **without a record** (an empty file, or only blank lines) is
+`incomplete`: it shows nothing about any record, and a producer that writes
+nothing must not pass a check. It is not `invalid`, because no record in it
+is wrong. `allow incomplete` does not accept it (exit code 3).
+
+A journal that **cannot be read** to its end (a missing file, a directory, a
+file without read permission, an error while reading) gets **no verdict**
+and no report: `verify` exits with 2 and names the error on standard error.
+A verifier MUST NOT judge the part it could read before the error. Exit code
+2 is otherwise reserved for usage errors.
 
 Two options change what passes, never a record state:
 
@@ -437,12 +475,16 @@ passes) and the exit code:
 
 ```
 unknown_profiles = require_known_profiles and some profile state is outside_scope
+empty   = the journal has no record
 verdict = invalid     if some state is invalid
-        = incomplete  else if some state is unknown or outside_scope, or unknown_profiles
+        = incomplete  else if empty, or some state is unknown or outside_scope,
+                      or unknown_profiles
         = valid       otherwise
 ok      = verdict == valid
-          or (verdict == incomplete and allow_incomplete and not unknown_profiles)
+          or (verdict == incomplete and allow_incomplete
+              and not unknown_profiles and not empty)
 exit    = 0 if ok, else 1 if verdict == invalid, else 3
+          (2 and no verdict when the journal cannot be read to its end)
 ```
 
 ### 6.5 Report
@@ -468,10 +510,31 @@ strings, like the records.
   fails unless incomplete journals are allowed (6.4). With that option a
   passing journal means that no record is provably wrong, not that the
   journal is complete.
+- Records removed from the **end** of a journal leave no trace: the
+  remaining records still link to each other, and the journal is `valid`
+  (fixture `tail-truncated.jsonl`). Only a `chain_hash` or a record count
+  kept outside the journal (an anchor, a signed note of the latest record)
+  shows that records are missing at the end.
 - An unsigned journal can be rewritten wholesale by whoever controls the
-  file. Signatures bind the chain to a key; anchoring the latest
-  `chain_hash` elsewhere (`anchor`) binds it to a point in time. Neither is
-  implied by a passing verification without keys.
+  file, and so can every record after a given one. Signatures bind the
+  chain to a key; anchoring the latest `chain_hash` elsewhere (`anchor`)
+  binds it to a point in time. Neither is implied by a passing verification
+  without keys.
+- A public key alone checks only the signatures that are present. Without
+  `require signatures`, a journal whose signatures were all removed is
+  `valid` (fixture `signatures-stripped.jsonl`).
+- `signature`, `correlation_id`, `job_id`, `decision_id`, `context`,
+  `redaction` and `anchor` are not hashed (4.1). They can be changed, added
+  or removed without any finding (fixture `unhashed-members-changed.jsonl`).
+  `redaction` states which payload members were masked before hashing, and
+  nothing protects that statement; `anchor` points to an anchoring that the
+  verifier does not check. Evidence-relevant facts belong in `payload`.
+- Two members with the same name in one object, at any depth, make the
+  record `schema_invalid` (section 2), so a program that reads the journal
+  later cannot be shown a member value other than the one that was hashed,
+  whichever of two values its parser keeps.
+- A journal without a record never passes, and a journal that cannot be
+  read to its end gets no verdict (6.4).
 - A `valid` record after an `unknown` one is valid relative to that record:
   nothing in the journal shows what came before it.
 - A profile state `valid` says that the payload has the members and types
@@ -551,6 +614,19 @@ Format 0.2 changed, compared with 0.1:
 - A record whose `schema` names another format or major version is
   `outside_scope` instead of `schema_invalid`.
 
+Changes after 0.2.1 (not yet released) that make explicit how a journal is
+read. No hash changes, and a journal that keeps these rules verifies as
+before:
+
+- The reading rules of section 2: a record line is valid UTF-8, has unique
+  member names at every depth, no unpaired surrogate, at most 64 levels of
+  nesting and nothing but JSON white space around the object; only JSON
+  white space makes a line blank. Before, the Go, Python and JavaScript
+  verifiers handled such lines differently, and some accepted them.
+- A journal without a record is `incomplete` and never passes, also with
+  `allow incomplete`; before, it was `valid`. A journal that cannot be read
+  to its end gets no verdict and exit code 2 (6.4).
+
 Profiles have their own major versions (3.4). A new minor version of a
 profile changes neither the record format nor the profile identifier.
 
@@ -588,7 +664,10 @@ when it meets producer conformance and in addition
    `require known profiles` to the verdict `valid`, every record with
    profile state `valid`. A
    verifier that does not know a profile still conforms for everything else,
-   but MUST report that profile as `profile_unknown`.
+   but MUST report that profile as `profile_unknown`;
+4. for a journal it cannot read (a directory, a missing file, a file
+   without read permission), exits with 2 and prints no report, also with
+   `allow incomplete` (6.4).
 
 Three cases are named here because implementations most often get them
 wrong, and all are mandatory. The first two are part of the vector
@@ -619,7 +698,8 @@ reports each vector and fixture. It is informative: it expects the command
 to offer `hash <record.json>` (with `state` and `profile_state` in its
 output) and `verify <journal.jsonl> [--pubkey <file>]
 [--require-signatures] [--allow-incomplete] [--require-known-profiles]
---json` (with `verdict` and `results`, exit codes 0, 1 and 3 as in 6.4)
+--json` (with `verdict` and `results`, exit codes 0, 1 and 3 as in 6.4, and 2
+without a report for a journal it cannot read)
 with the output members of the reference CLI (see README.md). The criterion is the data above, not the script; an
 implementation without a CLI can check the same files in its own tests, as
 the Go, Python and JavaScript implementations here do.

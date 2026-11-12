@@ -27,13 +27,16 @@ def cmd_verify(args: argparse.Namespace) -> int:
         print("--require-signatures needs --pubkey", file=sys.stderr)
         return 2
     try:
+        # Binary mode: lines end at a line feed only, and each line is
+        # decoded on its own (SPEC.md section 2).
         if args.file == "-":
-            report = rec.verify_stream(sys.stdin, pub, args.require_signatures, args.allow_incomplete, args.require_known_profiles)
+            report = rec.verify_stream(sys.stdin.buffer, pub, args.require_signatures, args.allow_incomplete, args.require_known_profiles)
         else:
-            with open(args.file, "r", encoding="utf-8") as fh:
+            with open(args.file, "rb") as fh:
                 report = rec.verify_stream(fh, pub, args.require_signatures, args.allow_incomplete, args.require_known_profiles)
     except OSError as exc:
-        print(exc, file=sys.stderr)
+        # A journal that cannot be read gets no verdict and no report.
+        print(f"cannot read {args.file}: {exc}", file=sys.stderr)
         return 2
     if args.json:
         print(_dump(report.to_dict()))
@@ -48,17 +51,17 @@ def cmd_verify(args: argparse.Namespace) -> int:
 
 def cmd_hash(args: argparse.Namespace) -> int:
     try:
-        raw = sys.stdin.read() if args.file == "-" else open(args.file, "r", encoding="utf-8").read()
+        if args.file == "-":
+            raw = sys.stdin.buffer.read()
+        else:
+            with open(args.file, "rb") as fh:
+                raw = fh.read()
     except OSError as exc:
         print(exc, file=sys.stderr)
         return 2
-    try:
-        parsed = rec._loads(raw)
-    except ValueError as exc:
-        print(f"invalid JSON: {exc}", file=sys.stderr)
-        return 2
-    if not isinstance(parsed, dict):
-        print("record is not a JSON object", file=sys.stderr)
+    parsed, problem = rec._parse_record(raw.strip(rec.JSON_WHITESPACE.encode()))
+    if parsed is None:
+        print(problem, file=sys.stderr)
         return 2
     try:
         h = rec.compute_hashes(parsed)
@@ -141,7 +144,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="python -m trail_evidence",
                                 description="Trail Evidence Record v1 tools (Python reference implementation). "
                                             "verify exits 0 for valid (or incomplete with --allow-incomplete), "
-                                            "1 for invalid, 2 for usage or I/O errors, 3 for incomplete.")
+                                            "1 for invalid, 2 for usage errors and journals that cannot be read "
+                                            "(no verdict, no report), 3 for incomplete, also for a journal without a record.")
     sub = p.add_subparsers(dest="command", required=True)
     v = sub.add_parser("verify", help="verify a JSON Lines journal")
     v.add_argument("file", help="journal path, or - for stdin")

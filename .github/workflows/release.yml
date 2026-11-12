@@ -1,20 +1,23 @@
 name: release
 
 # Builds the trail-evidence binaries with GoReleaser when a tag v* is pushed,
-# attaches them to the GitHub release, pushes the Go module tag go/<tag> so
-# that `go install .../go/cmd/trail-evidence@<tag>` resolves, builds the
-# Python distribution as a workflow artifact and uploads it to PyPI through
-# trusted publishing (OIDC, no token). The PyPI upload needs a one-time setup
-# on pypi.org (docs/RELEASING.md); without it the job reports why and the
-# release still succeeds.
+# attaches them to the GitHub release with the CHANGELOG.md section of the tag
+# as release notes, pushes the Go module tag go/<tag> so that
+# `go install .../go/cmd/trail-evidence@<tag>` resolves, builds the Python
+# distribution as a workflow artifact and uploads it to PyPI through trusted
+# publishing (OIDC, no token; set up on pypi.org, docs/RELEASING.md). A failed
+# PyPI upload fails the run; the GitHub release and the binaries exist by
+# then.
 
 on:
   push:
     tags:
       - "v*"
 
+# Read only by default; the two jobs that create the release and push the
+# module tag get contents: write, the PyPI job id-token: write.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   test:
@@ -37,6 +40,8 @@ jobs:
     name: GoReleaser
     needs: [test]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -45,11 +50,15 @@ jobs:
         with:
           go-version: stable
           cache-dependency-path: go/go.sum
+      - name: release notes from CHANGELOG.md
+        env:
+          TAG: ${{ github.ref_name }}
+        run: scripts/release-notes.sh "${TAG#v}" > "$RUNNER_TEMP/release-notes.md"
       - uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
           version: "~> v2"
-          args: release --clean
+          args: release --clean --release-notes=${{ runner.temp }}/release-notes.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -59,6 +68,8 @@ jobs:
     name: Go module tag go/${{ github.ref_name }}
     needs: [goreleaser]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - name: push go/${{ github.ref_name }}

@@ -44,7 +44,7 @@
   const reportJson = $("report-json");
   const copyButton = $("copy-report");
 
-  let journal = null; // { name, text }
+  let journal = null; // { name, data }: data is bytes (Uint8Array) or dropped text
   let running = false;
   let lastReport = null;
 
@@ -55,10 +55,16 @@
 
   // ---------------------------------------------------------------- input
 
-  function setJournal(name, text, note) {
-    journal = { name, text };
-    const lines = text.split("\n").filter((l) => l.trim() !== "").length;
-    fileInfo.textContent = `${name} · ${formatBytes(text.length)} · ${lines} non-empty line(s)`;
+  // The verifier gets the bytes of the file, not text decoded by the browser:
+  // it decodes every line on its own and reports a line that is not UTF-8
+  // (SPEC.md section 2), where file.text() would silently replace the bytes.
+  const lenient = new TextDecoder("utf-8");
+  function setJournal(name, data, note) {
+    journal = { name, data };
+    const text = typeof data === "string" ? data : lenient.decode(data);
+    const lines = text.split("\n").filter((l) => l.replace(/[ \t\r]+/g, "") !== "").length;
+    const size = typeof data === "string" ? new TextEncoder().encode(data).length : data.length;
+    fileInfo.textContent = `${name} · ${formatBytes(size)} · ${lines} non-empty line(s)`;
     fileNote.textContent = note || "";
     fileNote.hidden = !note;
     verifyButton.disabled = false;
@@ -72,14 +78,28 @@
     return `${(n / (1024 * 1024)).toFixed(1)} MiB`;
   }
 
+  // A result on screen always belongs to the journal and key shown above it:
+  // when the next check cannot run, the previous result goes away.
+  function hideResult() {
+    result.hidden = true;
+    lastReport = null;
+  }
+
   async function takeFile(file) {
     if (!file) return;
+    let data;
     try {
-      const text = await file.text();
-      setJournal(file.name, text);
+      data = new Uint8Array(await file.arrayBuffer());
     } catch (err) {
-      status.textContent = `Could not read ${file.name}: ${err.message}`;
+      // A file that cannot be read gets no verdict (SPEC.md section 6.4).
+      journal = null;
+      hideResult();
+      verifyButton.disabled = true;
+      fileInfo.textContent = "";
+      status.textContent = `Could not read ${file.name}, so there is no verdict: ${err.message}`;
+      return;
     }
+    setJournal(file.name, data);
   }
 
   fileInput.addEventListener("change", () => takeFile(fileInput.files[0]));
@@ -89,6 +109,9 @@
     fileInput.click();
   });
   dropzone.addEventListener("keydown", (ev) => {
+    // Only keys on the drop zone itself open the file chooser; Enter on one
+    // of the example links inside it follows that link.
+    if (ev.target !== dropzone) return;
     if (ev.key === "Enter" || ev.key === " ") {
       ev.preventDefault();
       fileInput.click();
@@ -125,8 +148,9 @@
     try {
       const res = await fetch(name, { cache: "no-cache" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setJournal(name, await res.text(), note);
+      setJournal(name, new Uint8Array(await res.arrayBuffer()), note);
     } catch (err) {
+      hideResult();
       status.textContent = window.location.protocol === "file:"
         ? `The example cannot be fetched from a file:// page; drop ${name} from the repository instead.`
         : `Could not load the example: ${err.message}`;
@@ -182,10 +206,12 @@
     if (!journal || running) return;
     const { key, ok } = currentKey();
     if (!ok) {
+      hideResult();
       status.textContent = "Fix the public key or clear the field.";
       return;
     }
     if (!te.cryptoAvailable()) {
+      hideResult();
       status.textContent = "This browser offers no WebCrypto here. Open the page over https, from localhost or as a local file.";
       return;
     }
@@ -193,7 +219,7 @@
     verifyButton.disabled = true;
     status.textContent = "Verifying…";
     try {
-      const report = await te.verifyStream(journal.text, {
+      const report = await te.verifyStream(journal.data, {
         publicKey: key,
         requireSignatures: !!key && requireBox.checked,
         allowIncomplete: allowBox.checked,
@@ -203,6 +229,7 @@
       render(report, key !== null);
       status.textContent = "";
     } catch (err) {
+      hideResult();
       status.textContent = `Verification failed to run: ${err.message}`;
     } finally {
       running = false;
@@ -293,6 +320,9 @@
     // Findings
     findingsList.replaceChildren();
     noFindings.hidden = report.findings.length > 0;
+    noFindings.textContent = report.records === 0
+      ? "No findings, because there is no record: nothing was checked."
+      : "No findings. Every hash recomputes, every link and sequence number matches, every profile named was checked.";
     for (const f of report.findings) {
       const head = el("div", { class: "head" }, [
         el("span", { class: "cls", text: f.class }),

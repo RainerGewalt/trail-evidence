@@ -10,6 +10,11 @@ const Schema = "trail.evidence/1"
 // "18446744073709551615".
 const MaxSeq = ^uint64(0)
 
+// MaxDepth is the deepest nesting of objects and arrays a record line may
+// have: the record object is level 1, every object or array inside it adds
+// one (SPEC.md section 2).
+const MaxDepth = 64
+
 // HashPrefix precedes every hex-encoded SHA-256 digest in a record.
 const HashPrefix = "sha256:"
 

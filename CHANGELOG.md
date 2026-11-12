@@ -6,6 +6,80 @@ tagged. Until then the record format is a draft and may change.
 
 ## Unreleased
 
+Fixes to how the verifiers read a journal and what they report. No hash
+changes: a journal whose lines keep the reading rules below verifies as
+before, and the journals of the TrailSource demo and interop runs give the
+same verdicts as with 0.2.1. Releases 0.2.0 and 0.2.1 are affected by the
+fixed behaviour in all three verifiers and in the GitHub Action.
+
+### Fixed
+
+- **Reading rules** (`SPEC.md` section 2). A record line is one JSON object:
+  valid UTF-8, no member name twice in one object at any depth (compared
+  after decoding escapes), no unpaired surrogate escape, at most 64 levels
+  of nesting, and nothing but JSON white space around it; only JSON white
+  space makes a line blank, and lines end at a line feed only. A line that
+  breaks a rule is `schema_invalid`. Before, the Go, Python and JavaScript
+  verifiers read such lines differently and could reach different verdicts
+  on the same file, and some lines passed as valid. The Python CLI and the
+  browser page now read journals as bytes and decode each line on its own,
+  so a line that is not UTF-8 is one invalid record instead of an
+  exception or a silently replaced character.
+- **Empty journal.** A journal without a record (an empty file, or only
+  blank lines) is `incomplete` and fails with exit code 3, also with
+  `--allow-incomplete`. Before, it was `valid` with exit code 0.
+- **Read errors.** A journal that cannot be read to its end (a directory, a
+  missing or unreadable file, an error while reading) gets no verdict and no
+  report: exit code 2 and one message. Before, the Go verifier and the
+  Action reported a directory as a valid journal. Go: `Report.Err`.
+- **Python** no longer ends with a traceback on bytes that are not UTF-8 or
+  on deep nesting.
+- **Browser page:** Enter on the example links loads the examples (it
+  opened the file chooser); the "What this verdict covers" block is correct
+  for an empty file, lines that are not a record, a single record and in
+  singular and plural; the previous result is hidden when a check cannot
+  run; the static text points to section 6.6 instead of 6.3 and no longer
+  says that no record was removed.
+
+### Changed
+
+- The summary lines of the three verifiers say what was not checked:
+  `signatures not checked (no key)`, `no record is signed`, the number of
+  verified signatures whenever a key was given, unsigned records, and
+  `with unknown profile (payload not checked)`. The JSON report is
+  unchanged.
+- The Action's job summary has a column "Signatures verified" ("not checked
+  (no key)" without `pubkey`) and a line that says what the verdict does
+  not cover.
+- `SPEC.md` section 6.6 names records cut off at the end of a journal, the
+  members that are not hashed (`redaction` among them), signatures removed
+  without `require signatures`, and duplicate member names; README and the
+  page say the same.
+- Conformance: `testdata/streams/` has fixtures for every reading rule, for
+  empty journals and for the documented limits; `scripts/conformance.sh`
+  checks that a journal that cannot be read gets exit code 2 and no report
+  (`SPEC.md` section 10, item 4); `scripts/crosscheck.sh` compares the
+  summary lines of the three verifiers word for word.
+- `web/test/browser.mjs` checks the page in headless Chrome (keyboard, file
+  input, edge cases) and renews the README screenshots, which now show the
+  coverage block.
+- Release: the release page starts with a command to try and carries the
+  CHANGELOG.md section of the tag as its notes (`scripts/release-notes.sh`,
+  which fails when the section is missing); the stale sentence about PyPI
+  "once it is set up" is gone. `release.yml` gives `contents: write` only to
+  the jobs that create the release and push the module tag.
+- CI tests Python 3.10 and 3.11 as well, the versions the package
+  classifiers name.
+
+### Since 0.2.1, already on main
+
+- The browser page says what a verdict covers and what it does not (#8).
+- README leads with the question and the browser verifier (#6).
+- CI runs the Python matrix on ubuntu-24.04, so that Python 3.9 stays
+  testable (#7).
+- An evaluation report form, an honest support statement and a private
+  security path in `SECURITY.md` (#4).
+
 ## 0.2.1 - 2026-11-07
 
 A patch release for the reason-code catalog. No change to the record

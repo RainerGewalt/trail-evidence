@@ -165,10 +165,16 @@ runs:
         {
           echo "### trail-evidence verify"
           echo
-          if [ "$ALLOW_INCOMPLETE" = "true" ]; then echo "allow-incomplete: incomplete journals are accepted."; echo; fi
+          if [ "$ALLOW_INCOMPLETE" = "true" ]; then echo "allow-incomplete: incomplete journals are accepted, except journals without a record."; echo; fi
           if [ "$REQUIRE_KNOWN_PROFILES" = "true" ]; then echo "require-known-profiles: records with an unknown profile make a journal incomplete."; echo; fi
-          echo "| Journal | Verdict | Records | Invalid | Unknown | Outside scope | Errors | Notices | Signed |"
-          echo "|---|---|---:|---:|---:|---:|---:|---:|---:|"
+          # Say what the verdict does not cover (rule of 8 November).
+          if [ -z "$PUBKEY" ]; then
+            echo "No pubkey: signatures are counted, not checked. A passing verdict says nothing about who produced a journal."; echo
+          elif [ "$REQUIRE_SIGNATURES" != "true" ]; then
+            echo "Signatures present are checked against pubkey; unsigned records do not fail without require-signatures."; echo
+          fi
+          echo "| Journal | Verdict | Records | Invalid | Unknown | Outside scope | Errors | Notices | Signed | Signatures verified |"
+          echo "|---|---|---:|---:|---:|---:|---:|---:|---:|---|"
         } >> "$GITHUB_STEP_SUMMARY"
         for f in "${files[@]}"; do
           set +e
@@ -176,11 +182,12 @@ runs:
           rc=$?
           set -e
           if [ "$rc" -eq 2 ]; then
-            echo "::error file=$f::trail-evidence could not read $f"
+            # No verdict for a journal that cannot be read (SPEC.md section 6.4).
+            echo "::error file=$f::trail-evidence could not read $f, so it has no verdict"
             exit 2
           fi
           # tr: jq.exe on Windows ends lines with CRLF
-          read -r ok jverdict records errors notices signed invalid unknown outside < <(jq -r '[.ok, .verdict, .records, .errors, .notices, .signed_records, .states.invalid, .states.unknown, .states.outside_scope] | @tsv' "$RUNNER_TEMP/trail-evidence-report.json" | tr -d '\r')
+          read -r ok jverdict records errors notices signed verified unsigned invalid unknown outside < <(jq -r '[.ok, .verdict, .records, .errors, .notices, .signed_records, .signatures_verified, .unsigned_records, .states.invalid, .states.unknown, .states.outside_scope] | @tsv' "$RUNNER_TEMP/trail-evidence-report.json" | tr -d '\r')
           total_records=$((total_records + records))
           total_errors=$((total_errors + errors))
           verdict="$jverdict"
@@ -189,7 +196,14 @@ runs:
             incomplete) any_incomplete=1; if [ "$ok" = "true" ]; then verdict="incomplete (allowed)"; fi ;;
           esac
           if [ "$ok" != "true" ]; then failed=1; fi
-          echo "| \`$f\` | $verdict | $records | $invalid | $unknown | $outside | $errors | $notices | $signed |" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$records" -eq 0 ]; then verdict="$verdict (no record)"; fi
+          if [ -z "$PUBKEY" ]; then
+            sigs="not checked (no key)"
+          else
+            if [ "$signed" -eq 0 ]; then sigs="no record signed"; else sigs="$verified of $signed"; fi
+            if [ "$unsigned" -gt 0 ] && [ "$signed" -gt 0 ]; then sigs="$sigs, $unsigned unsigned"; fi
+          fi
+          echo "| \`$f\` | $verdict | $records | $invalid | $unknown | $outside | $errors | $notices | $signed | $sigs |" >> "$GITHUB_STEP_SUMMARY"
           "$BIN" verify "$f" ${flags[@]+"${flags[@]}"} | sed "s|^|$f: |" || true
           jq -r --arg f "$f" '.findings[] | select(.severity == "error") | "::error file=\($f),line=\(.line)::\(.class): \(.message)"' "$RUNNER_TEMP/trail-evidence-report.json" | tr -d '\r'
         done

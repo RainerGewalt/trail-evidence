@@ -7,8 +7,10 @@
 //	trail-evidence vectors
 //
 // Exit codes of verify: 0 verdict valid (or incomplete with
-// --allow-incomplete), 1 verdict invalid, 2 usage or I/O error, 3 verdict
-// incomplete. hash exits 1 when the recorded hashes do not match.
+// --allow-incomplete), 1 verdict invalid, 2 usage error or a journal that
+// cannot be read (no verdict, no report), 3 verdict incomplete, also for a
+// journal without a record. hash exits 1 when the recorded hashes do not
+// match.
 package main
 
 import (
@@ -96,7 +98,9 @@ verify   checks a JSON Lines journal: schema, content_hash, chain_hash,
            valid       every record valid                       exit 0
            invalid     at least one record invalid              exit 1
            incomplete  no record invalid, but at least one      exit 3
-                       unknown or outside_scope
+                       unknown or outside_scope, or no record
+         A journal that cannot be read (a directory, a missing or
+         unreadable file) gets no verdict and no report: exit 2.
          --allow-incomplete accepts incomplete (exit 0), for journals known
          to be incomplete such as rotated logs. --require-known-profiles
          also counts records with a profile this verifier does not know as
@@ -180,6 +184,11 @@ func cmdVerify(args []string, stdout, stderr io.Writer) int {
 	}
 	defer in.Close()
 	rep := evidence.VerifyStream(in, opts)
+	if err := rep.Err(); err != nil {
+		// A journal that cannot be read gets no verdict and no report.
+		fmt.Fprintf(stderr, "cannot read %s: %v\n", pos[0], err)
+		return rep.ExitCode()
+	}
 	if flags["json"] == "true" {
 		enc := json.NewEncoder(stdout)
 		enc.SetEscapeHTML(false)

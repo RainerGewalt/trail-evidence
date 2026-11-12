@@ -5,12 +5,15 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
+	"testing/iotest"
 
 	"github.com/RainerGewalt/trail-evidence/go/evidence"
 )
@@ -626,6 +629,26 @@ func TestProfileJournals(t *testing.T) {
 	}
 }
 
+func testKey(t *testing.T) ed25519.PublicKey {
+	t.Helper()
+	pub, err := evidence.ParsePublicKey(filepath.Join(repoRoot, "testdata", "keys", "test-ed25519.pub"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pub
+}
+
+// otherKey is the public key of the seed 0x42 repeated, which did not sign
+// any fixture.
+func otherKey(t *testing.T) ed25519.PublicKey {
+	t.Helper()
+	pub, err := evidence.ParsePublicKey("2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pub
+}
+
 func TestSummaryLines(t *testing.T) {
 	cases := []struct {
 		file string
@@ -637,8 +660,19 @@ func TestSummaryLines(t *testing.T) {
 		{"seq-gap.jsonl", evidence.Options{AllowIncomplete: true}, "INCOMPLETE (allowed): 4 record(s) in 1 stream(s), no invalid record, 1 unknown"},
 		{"outside-scope.jsonl", evidence.Options{}, "INCOMPLETE: 4 record(s) in 1 stream(s), hash chain intact, 2 outside scope"},
 		{"seq-mismatch.jsonl", evidence.Options{}, "INVALID: 3 record(s) in 1 stream(s), 1 error(s)"},
-		{"profile-unknown.jsonl", evidence.Options{}, "VALID: 3 record(s) in 1 stream(s), hash chain intact, 2 with unknown profile"},
-		{"profile-unknown.jsonl", evidence.Options{RequireKnownProfiles: true}, "INCOMPLETE: 3 record(s) in 1 stream(s), hash chain intact, 2 with unknown profile"},
+		{"profile-unknown.jsonl", evidence.Options{}, "VALID: 3 record(s) in 1 stream(s), hash chain intact, 2 with unknown profile (payload not checked)"},
+		{"profile-unknown.jsonl", evidence.Options{RequireKnownProfiles: true}, "INCOMPLETE: 3 record(s) in 1 stream(s), hash chain intact, 2 with unknown profile (payload not checked)"},
+		// A summary says which signatures were not checked (rule of 8 November:
+		// a verifier says what it does not prove). The same lines in Python and
+		// JavaScript; scripts/crosscheck.sh compares them on every fixture.
+		{"signed.jsonl", evidence.Options{}, "VALID: 3 record(s) in 1 stream(s), hash chain intact, 3 signed record(s), signatures not checked (no key)"},
+		{"signed.jsonl", evidence.Options{PublicKey: testKey(t), RequireSignatures: true}, "VALID: 3 record(s) in 1 stream(s), hash chain intact, 3 signed record(s), 3 signature(s) verified"},
+		{"signatures-stripped.jsonl", evidence.Options{PublicKey: testKey(t)}, "VALID: 3 record(s) in 1 stream(s), hash chain intact, no record is signed"},
+		// Every signature fails with another producer's key: checked, none verified.
+		{"signed.jsonl", evidence.Options{PublicKey: otherKey(t)}, "INVALID: 3 record(s) in 1 stream(s), 3 error(s), 3 signed record(s), 0 signature(s) verified"},
+		{"signature-invalid.jsonl", evidence.Options{PublicKey: testKey(t), RequireSignatures: true}, "INVALID: 3 record(s) in 1 stream(s), 2 error(s), 2 signed record(s), 1 signature(s) verified, 1 unsigned record(s)"},
+		{"../../examples/tampered/signature-invalid.jsonl", evidence.Options{}, "VALID: 4 record(s) in 1 stream(s), hash chain intact, 4 signed record(s), signatures not checked (no key)"},
+		{"../../examples/tampered/signature-invalid.jsonl", evidence.Options{PublicKey: testKey(t)}, "INVALID: 4 record(s) in 1 stream(s), 2 error(s), 4 signed record(s), 2 signature(s) verified"},
 	}
 	for _, c := range cases {
 		f, err := os.Open(filepath.Join(repoRoot, "testdata", "streams", c.file))
@@ -649,6 +683,44 @@ func TestSummaryLines(t *testing.T) {
 		f.Close()
 		if got != c.want {
 			t.Errorf("%s %+v:\n got %s\nwant %s", c.file, c.opts, got, c.want)
+		}
+	}
+}
+
+// TestVerifyStreamReadError: a journal that cannot be read to its end gets
+// no verdict (SPEC.md section 6.4). The records read before the error are
+// valid; the report must still not pass.
+func TestVerifyStreamReadError(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join(repoRoot, "examples", "transfer-worker.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := bytes.SplitAfter(raw, []byte("\n"))[0]
+	failing := errors.New("disk read failed")
+	for name, rd := range map[string]io.Reader{
+		"after the first record": io.MultiReader(bytes.NewReader(head), iotest.ErrReader(failing)),
+		"before any record":      iotest.ErrReader(failing),
+	} {
+		t.Run(name, func(t *testing.T) {
+			rep := evidence.VerifyStream(rd, evidence.Options{AllowIncomplete: true})
+			if rep.OK || rep.Verdict != "" || rep.ExitCode() != evidence.ExitUsage {
+				t.Fatalf("read error: ok %v, verdict %q, exit %d; want ok false, no verdict, exit %d (%s)", rep.OK, rep.Verdict, rep.ExitCode(), evidence.ExitUsage, rep.Summary())
+			}
+		})
+	}
+}
+
+// TestEmptyJournal: no record, nothing verified, never a pass.
+func TestEmptyJournal(t *testing.T) {
+	for _, in := range []string{"", "\n \n\t\r\n"} {
+		for _, allow := range []bool{false, true} {
+			rep := evidence.VerifyStream(strings.NewReader(in), evidence.Options{AllowIncomplete: allow})
+			if rep.OK || rep.Verdict != evidence.VerdictIncomplete || rep.ExitCode() != evidence.ExitIncomplete {
+				t.Errorf("%q allow=%v: ok %v, verdict %q, exit %d; want incomplete, exit 3", in, allow, rep.OK, rep.Verdict, rep.ExitCode())
+			}
+			if want := "INCOMPLETE: 0 record(s) in 0 stream(s), no record: nothing was verified"; rep.Summary() != want {
+				t.Errorf("%q allow=%v: summary %q, want %q", in, allow, rep.Summary(), want)
+			}
 		}
 	}
 }

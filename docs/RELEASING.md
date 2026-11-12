@@ -7,7 +7,9 @@ version number.
 ## Before the tag
 
 1. `CHANGELOG.md`: move the entries under "Unreleased" to a section
-   `## X.Y.Z - YYYY-MM-DD`.
+   `## X.Y.Z - YYYY-MM-DD`. That section becomes the release notes;
+   `scripts/release-notes.sh X.Y.Z` prints them, and the release fails
+   without it.
 2. `python/pyproject.toml` and `python/trail_evidence/__init__.py`: set
    `version` and `__version__` to `X.Y.Z`; `devVersion` in
    `go/cmd/trail-evidence/main.go` names the next version after the tag
@@ -18,7 +20,8 @@ version number.
    `goreleaser check` and, if GoReleaser is installed,
    `goreleaser release --snapshot --clean` to see the archives in `dist/`.
 4. Run the first-use check from a fresh clone of the release commit:
-   `scripts/first-use.sh` (`docs/TESTING.md`, L5). No tag without a pass.
+   `scripts/first-use.sh` (`docs/TESTING.md`, L5), and the browser check
+   `node web/test/browser.mjs` (L4). No tag without a pass.
 
 ## Tag
 
@@ -32,7 +35,9 @@ git push origin vX.Y.Z
 - runs `go test ./...` and the generated-files check;
 - runs GoReleaser (`.goreleaser.yaml`): binaries for Linux, macOS and
   Windows on amd64 and arm64, one archive per target with `LICENSE` and
-  `SPEC.md`, and `checksums.txt` (SHA-256), attached to the GitHub release;
+  `SPEC.md`, and `checksums.txt` (SHA-256), attached to the GitHub release,
+  whose page starts with a command to try and carries the CHANGELOG.md
+  section of the tag;
 - pushes the Go module tag `go/vX.Y.Z`. The module lives in `go/`, so
   `go install github.com/RainerGewalt/trail-evidence/go/cmd/trail-evidence@vX.Y.Z`
   needs that prefixed tag. Without it `@latest` still works but resolves to

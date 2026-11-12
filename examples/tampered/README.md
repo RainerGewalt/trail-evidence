@@ -69,7 +69,7 @@ trail-evidence verify examples/tampered/seq-mismatch.jsonl
 #   error   seq_mismatch      record #2 (line 3, stream "worker-01", seq 3): seq 3, expected 2: prev_hash links to the record with seq 1, so no record can be missing in between
 
 trail-evidence verify examples/tampered/signature-invalid.jsonl
-# VALID: 4 record(s) in 1 stream(s), hash chain intact, 4 signed record(s)
+# VALID: 4 record(s) in 1 stream(s), hash chain intact, 4 signed record(s), signatures not checked (no key)
 
 trail-evidence verify examples/tampered/signature-invalid.jsonl \
     --pubkey testdata/keys/test-ed25519.pub --require-signatures

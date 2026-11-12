@@ -99,6 +99,11 @@ PROFILE_STATES = (PROFILE_NONE, VALID, INVALID, OUTSIDE)
 
 MAX_SAFE_INTEGER = 2**53
 
+# The deepest nesting of objects and arrays a record line may have: the
+# record object is level 1, every object or array inside it adds one
+# (SPEC.md section 2).
+MAX_DEPTH = 64
+
 ERROR = "error"
 NOTICE = "notice"
 
@@ -196,6 +201,9 @@ class Report:
     streams: list = field(default_factory=list)
     results: list = field(default_factory=list)
     findings: list = field(default_factory=list)
+    # Verified with a public key. Not part of the JSON report; summary() uses
+    # it to say which signatures were not checked.
+    key_given: bool = field(default=False, repr=False)
 
     def add(self, *findings: Finding) -> None:
         for f in findings:
@@ -208,16 +216,20 @@ class Report:
                 self.restarts += 1
 
     def finish(self) -> None:
-        """Compute verdict and ok from the record states (SPEC.md section 6.4)."""
+        """Compute verdict and ok from the record states (SPEC.md section 6.4).
+
+        A journal without a record is incomplete and never passes.
+        """
         unknown_profiles = self.require_known_profiles and self.profile_states[OUTSIDE] > 0
+        empty = self.records == 0
         if self.states[INVALID]:
             self.verdict = VERDICT_INVALID
-        elif self.states[UNKNOWN] or self.states[OUTSIDE] or unknown_profiles:
+        elif empty or self.states[UNKNOWN] or self.states[OUTSIDE] or unknown_profiles:
             self.verdict = VERDICT_INCOMPLETE
         else:
             self.verdict = VERDICT_VALID
         self.ok = self.verdict == VERDICT_VALID or (
-            self.verdict == VERDICT_INCOMPLETE and self.allow_incomplete and not unknown_profiles)
+            self.verdict == VERDICT_INCOMPLETE and self.allow_incomplete and not unknown_profiles and not empty)
 
     def exit_code(self) -> int:
         if self.ok:
@@ -227,6 +239,8 @@ class Report:
     def summary(self) -> str:
         head = self.verdict.upper() + (" (allowed)" if self.verdict == VERDICT_INCOMPLETE and self.ok else "")
         s = f"{head}: {self.records} record(s) in {len(self.streams)} stream(s)"
+        if self.records == 0:
+            return s + ", no record: nothing was verified"
         if self.verdict == VERDICT_INVALID:
             s += f", {self.errors} error(s)"
         elif self.states[UNKNOWN]:
@@ -238,13 +252,20 @@ class Report:
         if self.states[OUTSIDE]:
             s += f", {self.states[OUTSIDE]} outside scope"
         if self.profile_states[OUTSIDE]:
-            s += f", {self.profile_states[OUTSIDE]} with unknown profile"
+            s += f", {self.profile_states[OUTSIDE]} with unknown profile (payload not checked)"
         if self.restarts:
             s += f", {self.restarts} restart(s)"
-        if self.signed_records:
-            s += f", {self.signed_records} signed record(s)"
-            if self.signatures_verified or self.unsigned_records:
-                s += f", {self.signatures_verified} signature(s) verified"
+        # Say which signatures were not checked: without a key none were, and
+        # with a key only the ones that are present.
+        key_given = self.key_given or self.signatures_verified > 0 or self.unsigned_records > 0
+        if not key_given and self.signed_records:
+            s += f", {self.signed_records} signed record(s), signatures not checked (no key)"
+        elif key_given and not self.signed_records:
+            s += ", no record is signed"
+        elif key_given:
+            s += f", {self.signed_records} signed record(s), {self.signatures_verified} signature(s) verified"
+            if self.unsigned_records:
+                s += f", {self.unsigned_records} unsigned record(s)"
         return s
 
     def to_dict(self) -> dict:
@@ -335,6 +356,8 @@ def seal(record: dict, prev_hash: str) -> dict:
         raise ValueError("chain_restart, when present, must be true")
     elif "anchor_hash" in record:
         raise ValueError("anchor_hash is only allowed with chain_restart")
+    if _value_depth(record) > MAX_DEPTH:
+        raise ValueError(f"record nested deeper than {MAX_DEPTH} levels")
     record["prev_hash"] = prev_hash
     record.pop("signature", None)
     h = compute_hashes(record)
@@ -452,11 +475,90 @@ def _reject_constant(name: str):
     raise ValueError(f"{name} is not valid JSON")
 
 
+# The reading rules of SPEC.md section 2: a record line is exactly one JSON
+# object, valid UTF-8, with unique member names in every object, no string
+# with an unpaired surrogate, nested at most MAX_DEPTH levels, and nothing but
+# JSON white space around it. The json module keeps the last of two members
+# with the same name and accepts unpaired surrogate escapes, so both are
+# checked here; it already rejects data after the object ("Extra data").
+JSON_WHITESPACE = " \t\n\r"
+_SURROGATE_RE = re.compile("[\ud800-\udfff]")
+_NESTING_RE = re.compile(r'[\[\]{}"\\]')
+
+
+def _no_surrogate(s: str, what: str) -> None:
+    # A paired escape decodes to one code point above U+FFFF, so any
+    # surrogate left in a decoded string was unpaired.
+    if _SURROGATE_RE.search(s):
+        raise ValueError(f"{what} with an unpaired surrogate")
+
+
+def _object_pairs(pairs: list) -> dict:
+    """object_pairs_hook: reject duplicate names and unpaired surrogates."""
+    obj: dict = {}
+    for name, value in pairs:
+        _no_surrogate(name, "member name")
+        if name in obj:
+            raise ValueError(f'duplicate member name "{name}"')
+        obj[name] = value
+        # Objects nested in value were checked by their own hook call;
+        # strings in value and in arrays below it are checked here.
+        todo = [value]
+        while todo:
+            v = todo.pop()
+            if isinstance(v, str):
+                _no_surrogate(v, "string")
+            elif isinstance(v, list):
+                todo.extend(v)
+    return obj
+
+
+def _nesting_depth(text: str) -> int:
+    """Deepest nesting of objects and arrays, counting brackets outside strings."""
+    depth = deepest = 0
+    in_string = False
+    skip = -1
+    for m in _NESTING_RE.finditer(text):
+        i = m.start()
+        if i < skip:
+            continue
+        c = text[i]
+        if in_string:
+            if c == "\\":
+                skip = i + 2
+            elif c == '"':
+                in_string = False
+        elif c == '"':
+            in_string = True
+        elif c in "[{":
+            depth += 1
+            deepest = max(deepest, depth)
+        elif c in "]}":
+            depth -= 1
+    return deepest
+
+
+def _value_depth(value: Any) -> int:
+    """Nesting depth of a parsed JSON value (an object or array is level 1)."""
+    deepest = 0
+    todo = [(value, 1)]
+    while todo:
+        v, d = todo.pop()
+        if isinstance(v, dict):
+            deepest = max(deepest, d)
+            todo.extend((x, d + 1) for x in v.values())
+        elif isinstance(v, list):
+            deepest = max(deepest, d)
+            todo.extend((x, d + 1) for x in v)
+    return deepest
+
+
 def _loads(raw: Union[str, bytes]) -> Any:
     # Integer literals keep their text (seq "-0" is not "0"); NaN and
     # Infinity, which the json module accepts by default, are rejected like
-    # every strict JSON parser does.
-    return json.loads(raw, parse_int=_IntLiteral, parse_constant=_reject_constant)
+    # every strict JSON parser does; duplicate names and unpaired surrogates
+    # are rejected by the hook.
+    return json.loads(raw, parse_int=_IntLiteral, parse_constant=_reject_constant, object_pairs_hook=_object_pairs)
 
 
 @dataclass
@@ -670,10 +772,23 @@ def validate_structure(record: dict, seq: Optional[SeqInfo] = None) -> list:
 # ---------------------------------------------------------------- verification
 
 def _parse_record(raw: Union[str, bytes]):
+    """Read one record line under the reading rules of SPEC.md section 2.
+
+    Returns (record, None) or (None, problem).
+    """
+    if isinstance(raw, (bytes, bytearray)):
+        try:
+            raw = bytes(raw).decode("utf-8")
+        except UnicodeDecodeError:
+            return None, "line is not valid UTF-8"
+    if _nesting_depth(raw) > MAX_DEPTH:
+        return None, f"nesting deeper than {MAX_DEPTH} levels"
     try:
         value = _loads(raw)
     except ValueError as exc:
         return None, f"invalid JSON: {exc}"
+    except RecursionError:
+        return None, f"nesting deeper than {MAX_DEPTH} levels"
     if not isinstance(value, dict):
         return None, "record is not a JSON object"
     return value, None
@@ -908,22 +1023,32 @@ def verify_stream(lines: Union[TextIO, Iterable[Union[str, bytes]]],
                   require_known_profiles: bool = False) -> Report:
     """Verify a JSON Lines journal (file object or iterable of lines).
 
-    Blank lines are skipped. Verification continues after an error so that
+    Pass a file opened in binary mode (``open(path, "rb")``): lines then end
+    at a line feed only, as SPEC.md section 2 says, and a line that is not
+    UTF-8 is reported as schema_invalid. A text-mode file also works for
+    UTF-8 journals, but splits lines at a lone carriage return as well and
+    fails on bytes that are not UTF-8. Blank lines are skipped. Verification continues after an error so that
     the report lists every problem; chain state advances with the record's
     declared chain_hash. Every record gets a state (valid, invalid, unknown,
     outside_scope) and a profile state; the journal gets the verdict valid,
-    invalid or incomplete. ``allow_incomplete`` accepts incomplete (for
-    journals known to be incomplete, such as rotated logs);
+    invalid or incomplete; a journal without a record is incomplete and never
+    passes. An OSError while reading the lines is raised: a journal that
+    cannot be read to its end gets no report (SPEC.md section 6.4).
+    ``allow_incomplete`` accepts incomplete (for journals known to be
+    incomplete, such as rotated logs);
     ``require_known_profiles`` counts records with an unknown profile as
     incomplete, which allow_incomplete does not accept.
     """
-    report = Report(allow_incomplete=allow_incomplete, require_known_profiles=require_known_profiles)
+    report = Report(allow_incomplete=allow_incomplete, require_known_profiles=require_known_profiles,
+                    key_given=public_key is not None)
     streams: dict = {}
     index = -1
     for line_no, raw in enumerate(lines, start=1):
-        if isinstance(raw, bytes):
-            raw = raw.decode("utf-8")
-        if not raw.strip():
+        # Only JSON white space makes a line blank (SPEC.md section 2). Bytes
+        # are decoded per line, so a line that is not UTF-8 is one invalid
+        # record rather than the end of the journal.
+        raw = raw.strip(JSON_WHITESPACE.encode() if isinstance(raw, (bytes, bytearray)) else JSON_WHITESPACE)
+        if not raw:
             continue
         index += 1
         report.records += 1

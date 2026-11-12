@@ -37,6 +37,7 @@ come with a few rules.
    cd python && python3 -m unittest discover -s tests && cd ..
    node web/test/run.mjs
    scripts/crosscheck.sh            # includes scripts/conformance.sh for all three
+   node web/test/browser.mjs        # after changes to web/: the page in headless Chrome (Node 22, Chrome)
    scripts/validate_schema.py --vectors testdata/vectors.json examples/*.jsonl examples/tampered/*.jsonl profiles/*/*.journal.jsonl
    scripts/profiles.py --check
    scripts/reason_codes.py --check

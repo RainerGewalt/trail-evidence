@@ -27,7 +27,9 @@
 #       findings: [{"index": ..., "class": ..., ...}, ...] and results:
 #       [{"index": ..., "state": ..., "profile_state": ...}, ...];
 #       exit 0 when ok, 1 when the verdict is invalid, 3 when it is
-#       incomplete and not allowed
+#       incomplete and not allowed; for a journal it cannot read (a
+#       directory, a missing file, a file without read permission) exit 2
+#       and print no report
 #
 # The script needs python3 (3.6 or newer, standard library only) for its own
 # bookkeeping; set PYTHON to choose one. Exit 0: conformant. Exit 1: at least
@@ -220,13 +222,45 @@ try:
                 print("       " + b)
         else:
             print("ok   " + label)
+
+    # A journal that cannot be read gets no verdict and no report (SPEC.md
+    # section 6.4): exit code 2, nothing on standard output.
+    print("== input errors (SPEC.md section 6.4)")
+    unreadable = os.path.join(tmp, "unreadable.jsonl")
+    with open(unreadable, "w", encoding="utf-8") as fh:
+        fh.write("{}\n")
+    os.chmod(unreadable, 0)
+    inputs = [("directory", tmp), ("missing file", os.path.join(tmp, "missing.jsonl"))]
+    try:
+        open(unreadable, "rb").close()
+        print("skip file without read permission (running as root)")
+    except OSError:
+        inputs.append(("file without read permission", unreadable))
+    for name, path in inputs:
+        for opts in ([], ["--allow-incomplete"]):
+            label = name + (" [allow-incomplete]" if opts else "")
+            rc, out, err = run(["verify", path] + opts + ["--json"])
+            bad = []
+            if rc != 2:
+                bad.append("exit code %d, expected 2" % rc)
+            if out.strip():
+                bad.append("printed a report: %s" % out.strip()[:120])
+            if bad:
+                failures.append(label)
+                print("FAIL " + label)
+                for b in bad:
+                    print("       " + b)
+            else:
+                print("ok   " + label)
+    os.chmod(unreadable, 0o600)
+    input_checks = 2 * len(inputs)
 finally:
     shutil.rmtree(tmp, ignore_errors=True)
 
-total = len(data["vectors"]) + len(index["cases"])
+total = len(data["vectors"]) + len(index["cases"]) + input_checks
 print()
 if failures:
     print("NOT CONFORMANT: %d of %d checks failed (suite %s): %s" % (len(failures), total, suite, ", ".join(failures)))
     sys.exit(1)
-print("conformant: %d vectors and %d stream cases of trail.evidence/1, format 0.2 (suite %s)" % (len(data["vectors"]), len(index["cases"]), suite))
+print("conformant: %d vectors, %d stream cases and %d input errors of trail.evidence/1, format 0.2 (suite %s)" % (len(data["vectors"]), len(index["cases"]), input_checks, suite))
 PYEOF

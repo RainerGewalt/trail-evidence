@@ -1,0 +1,6 @@
+# Test data is compared byte for byte (some fixtures hold carriage returns
+# and bytes that are not UTF-8 on purpose): never convert line endings.
+testdata/** -text
+examples/** -text
+web/examples/** -text
+profiles/**/*.jsonl -text

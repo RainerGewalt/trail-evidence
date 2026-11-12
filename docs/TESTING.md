@@ -20,14 +20,29 @@ the Go, Python and JavaScript tests.
 check against. `testdata/vectors.json` has to be reproduced byte for byte by
 every implementation, and `scripts/crosscheck.sh` (with
 `scripts/conformance.sh`) checks that the Go, Python and browser verifiers
-produce identical reports, states and exit codes on every vector and
-journal. `scripts/validate_schema.py`, `scripts/profiles.py --check` and
+produce identical reports, summary lines, states and exit codes on every
+vector and journal. The journals include a differential corpus of malformed
+and edge-case input, each case one on which the verifiers once disagreed or
+a verdict is easy to misread: duplicate member names at every depth, data
+after the object, lines that are not UTF-8, nesting beyond 64 levels,
+unpaired surrogates, white space that is not JSON white space, an empty
+journal, and the documented limits (a journal cut off at its end, changed
+members that are not hashed, signatures removed). `scripts/conformance.sh`
+also checks that a journal that cannot be read (a directory, a missing or
+unreadable file) gets exit code 2 and no report. `scripts/validate_schema.py`, `scripts/profiles.py --check` and
 `scripts/reason_codes.py --check` keep the JSON Schema, the profile copies and
 the reason-code tables in step.
 
 **L4 Scenario.** The journals a user meets first: `examples/` (one per
 producer kind) and `examples/tampered/` with the verdict each one must reach
-(`examples/tampered/expected.json`).
+(`examples/tampered/expected.json`). `node web/test/browser.mjs` checks the
+page itself in headless Chrome with real key and file-input events: the
+example links work with Tab and Enter, an empty file, a file that is not
+JSON and a line that is not UTF-8 get a verdict that is not green and a
+coverage text that says what was checked, and an invalid key hides the
+previous result. It needs Node 22 and Chrome, runs in CI (job
+`web-browser`) and again by hand before a tag, and renews the README
+screenshots with `--screenshots docs/screenshots`.
 
 **L5 First use.** `scripts/first-use.sh` walks through the README as a new
 user would and stops at the first step that does not behave as documented:

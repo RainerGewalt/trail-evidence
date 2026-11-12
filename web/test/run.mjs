@@ -3,9 +3,11 @@
 //
 //   node web/test/run.mjs                 run all checks
 //   node web/test/run.mjs report <file.jsonl> [--pubkey <hex|file>] [--require-signatures] [--allow-incomplete] [--require-known-profiles]
-//                                         print the JSON report (exit 0 ok, 1 invalid, 2 usage, 3 incomplete)
-//   node web/test/run.mjs verify <file.jsonl> [...] --json
-//                                         same as report, with the CLI flags of Go and Python
+//                                         print the JSON report (exit 0 ok, 1 invalid, 2 usage or a journal
+//                                         that cannot be read, no report; 3 incomplete)
+//   node web/test/run.mjs verify <file.jsonl> [...] [--json]
+//                                         same as report with --json; without it the summary line
+//                                         and the findings, like the Go and Python CLIs
 //   node web/test/run.mjs hash <record.json>
 //                                         recompute the hashes of one record, like `trail-evidence hash`
 //
@@ -14,7 +16,9 @@
 // scripts/conformance.sh expects from any verifier.
 
 import { createRequire } from "node:module";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, mkdtempSync, writeFileSync, chmodSync, rmSync, openSync, closeSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -37,6 +41,9 @@ const WEB_EXAMPLES = path.join(ROOT, "web", "examples");
 const PROFILES = path.join(ROOT, "profiles");
 
 const read = (p) => readFileSync(p, "utf8");
+// Journals are read as bytes, like the page and the Go and Python CLIs:
+// verifyStream splits them at line feeds and decodes each line on its own.
+const readBytes = (p) => new Uint8Array(readFileSync(p));
 
 // ---------------------------------------------------------------- report mode
 
@@ -49,7 +56,7 @@ function loadKey(spec) {
   return te.parsePublicKey(read(spec));
 }
 
-async function reportMode(args) {
+async function reportMode(args, text = false) {
   let file = null;
   let pubkey = null;
   let requireSignatures = false;
@@ -68,7 +75,7 @@ async function reportMode(args) {
     } else if (a === "--require-known-profiles") {
       requireKnownProfiles = true;
     } else if (a === "--json") {
-      // the report is always JSON
+      text = false;
     } else if (a.startsWith("-")) {
       console.error(`unknown flag ${a}`);
       return 2;
@@ -96,12 +103,29 @@ async function reportMode(args) {
       return 2;
     }
   }
-  const report = await te.verifyStream(read(file), { publicKey, requireSignatures, allowIncomplete, requireKnownProfiles });
+  let data;
+  try {
+    data = readBytes(file);
+  } catch (err) {
+    // A journal that cannot be read gets no verdict and no report.
+    console.error(`cannot read ${file}: ${err.message}`);
+    return 2;
+  }
+  const report = await te.verifyStream(data, { publicKey, requireSignatures, allowIncomplete, requireKnownProfiles });
   if (report.signature_check === "unavailable") {
     console.error("Ed25519 is not available in this Node runtime; signatures were not checked");
     return 2;
   }
-  process.stdout.write(JSON.stringify(te.reportToJSON(report), null, 2) + "\n");
+  if (text) {
+    const out = [te.summary(report)];
+    for (const f of report.findings) {
+      const seq = f.seq === null || f.seq === undefined ? "-" : String(f.seq);
+      out.push(`  ${f.severity.padEnd(7)} ${f.class.padEnd(17)} record #${f.index} (line ${f.line}, stream ${JSON.stringify(f.stream_id || "")}, seq ${seq}): ${f.message}`);
+    }
+    process.stdout.write(out.join("\n") + "\n");
+  } else {
+    process.stdout.write(JSON.stringify(te.reportToJSON(report), null, 2) + "\n");
+  }
   return te.exitCode(report);
 }
 
@@ -115,11 +139,18 @@ async function hashMode(args) {
   let raw;
   let parsed;
   try {
-    raw = read(args[0]);
-    parsed = JSON.parse(raw);
+    raw = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(readBytes(args[0])).replace(/^[ \t\n\r]+|[ \t\n\r]+$/g, "");
   } catch (err) {
-    console.error(err.message);
+    console.error(err.code ? err.message : "record is not valid UTF-8");
     return 2;
+  }
+  {
+    const line = te.parseRecordLine(raw);
+    if (line.record === null) {
+      console.error(line.problem);
+      return 2;
+    }
+    parsed = line.record;
   }
   let h;
   try {
@@ -297,7 +328,7 @@ async function checkIndex(dir) {
     let publicKey = null;
     if (c.pubkey) publicKey = te.parsePublicKey(read(path.join(dir, c.pubkey)));
     const name = c.file + (c.allow_incomplete ? " [allow-incomplete]" : "") + (c.require_known_profiles ? " [require-known-profiles]" : "");
-    const report = await te.verifyStream(read(path.join(dir, c.file)), {
+    const report = await te.verifyStream(readBytes(path.join(dir, c.file)), {
       publicKey, requireSignatures: !!c.require_signatures, allowIncomplete: !!c.allow_incomplete, requireKnownProfiles: !!c.require_known_profiles,
     });
     check(report.signature_check !== "unavailable", `${name}: signatures were checked`);
@@ -333,15 +364,21 @@ async function testStreams() {
     ["seq-gap.jsonl", {}, "INCOMPLETE: 4 record(s) in 1 stream(s), no invalid record, 1 unknown"],
     ["seq-gap.jsonl", { allowIncomplete: true }, "INCOMPLETE (allowed): 4 record(s) in 1 stream(s), no invalid record, 1 unknown"],
     ["outside-scope.jsonl", {}, "INCOMPLETE: 4 record(s) in 1 stream(s), hash chain intact, 2 outside scope"],
-    ["profile-unknown.jsonl", {}, "VALID: 3 record(s) in 1 stream(s), hash chain intact, 2 with unknown profile"],
-    ["profile-unknown.jsonl", { requireKnownProfiles: true }, "INCOMPLETE: 3 record(s) in 1 stream(s), hash chain intact, 2 with unknown profile"],
+    ["profile-unknown.jsonl", {}, "VALID: 3 record(s) in 1 stream(s), hash chain intact, 2 with unknown profile (payload not checked)"],
+    ["profile-unknown.jsonl", { requireKnownProfiles: true }, "INCOMPLETE: 3 record(s) in 1 stream(s), hash chain intact, 2 with unknown profile (payload not checked)"],
     ["restart.jsonl", {}, "VALID: 4 record(s) in 1 stream(s), hash chain intact, 1 restart(s)"],
     ["signed.jsonl", { publicKey: pub, requireSignatures: true }, "VALID: 3 record(s) in 1 stream(s), hash chain intact, 3 signed record(s), 3 signature(s) verified"],
-    ["signed.jsonl", {}, "VALID: 3 record(s) in 1 stream(s), hash chain intact, 3 signed record(s)"],
-    ["signature-invalid.jsonl", { publicKey: pub, requireSignatures: true }, "INVALID: 3 record(s) in 1 stream(s), 2 error(s), 2 signed record(s), 1 signature(s) verified"],
+    // What was not checked, word for word as in Go and Python.
+    ["signed.jsonl", {}, "VALID: 3 record(s) in 1 stream(s), hash chain intact, 3 signed record(s), signatures not checked (no key)"],
+    ["signatures-stripped.jsonl", { publicKey: pub }, "VALID: 3 record(s) in 1 stream(s), hash chain intact, no record is signed"],
+    // Every signature fails with another producer's key: checked, none verified.
+    ["signed.jsonl", { publicKey: te.bytes.fromHex("2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12") }, "INVALID: 3 record(s) in 1 stream(s), 3 error(s), 3 signed record(s), 0 signature(s) verified"],
+    ["signature-invalid.jsonl", { publicKey: pub, requireSignatures: true }, "INVALID: 3 record(s) in 1 stream(s), 2 error(s), 2 signed record(s), 1 signature(s) verified, 1 unsigned record(s)"],
+    ["../../examples/tampered/signature-invalid.jsonl", {}, "VALID: 4 record(s) in 1 stream(s), hash chain intact, 4 signed record(s), signatures not checked (no key)"],
+    ["../../examples/tampered/signature-invalid.jsonl", { publicKey: pub }, "INVALID: 4 record(s) in 1 stream(s), 2 error(s), 4 signed record(s), 2 signature(s) verified"],
   ];
   for (const [file, opts, want] of lines) {
-    eq(te.summary(await te.verifyStream(read(path.join(STREAMS, file)), opts)), want, `${file}: summary line`);
+    eq(te.summary(await te.verifyStream(readBytes(path.join(STREAMS, file)), opts)), want, `${file}: summary line`);
   }
   // Blank lines and CRLF line endings are tolerated, line numbers count every line.
   const crlf = read(path.join(STREAMS, "seq-mismatch.jsonl")).split("\n").join("\r\n").replace(/\r\n/, "\r\n\r\n");
@@ -496,7 +533,7 @@ async function coverageTests() {
   lacks(c.completeness, "not changed", "completeness does not claim immutability");
 
   c = te.coverage(await te.verifyStream(ex("tampered/hash-mismatch.jsonl")), false);
-  has(c.chain, "1 record fail that check", "hash mismatch: one chain failure");
+  has(c.chain, "1 record fails that check", "hash mismatch: one chain failure, singular");
 
   c = te.coverage(await te.verifyStream(ex("tampered/signature-invalid.jsonl"), { publicKey: key }), true);
   lacks(c.chain, "fail", "signature invalid: chain row shows no failure");
@@ -513,10 +550,10 @@ async function coverageTests() {
 
   c = te.coverage(await te.verifyStream(ex("tampered/outside-scope.jsonl")), false);
   has(c.chain, " of ", "outside scope: checked for a subset");
-  has(c.chain, "name another format or major version and were not checked", "outside scope: unchecked records named");
+  has(c.chain, "1 record names another format or major version and was not checked", "outside scope: unchecked record named, singular");
 
   c = te.coverage(await te.verifyStream(ex("tampered/seq-gap.jsonl")), false);
-  has(c.chain, "link to a predecessor that is not in this journal", "seq gap: unknown predecessor named");
+  has(c.chain, "1 record links to a predecessor that is not in this journal", "seq gap: unknown predecessor named, singular");
   lacks(c.chain, "fail", "seq gap: not a chain failure");
 
   c = te.coverage(await te.verifyStream(st("profile-states.jsonl")), false);
@@ -529,13 +566,85 @@ async function coverageTests() {
 
   c = te.coverage(await te.verifyStream(st("profile-unknown.jsonl")), false);
   has(c.profiles, "name a profile this page does not know", "profile unknown: named as unchecked");
+
+  // Edge cases: no record, lines that are not records, one record.
+  for (const empty of ["", "\n \n"]) {
+    c = te.coverage(await te.verifyStream(empty), false);
+    has(c.chain, "Nothing checked: the file contains no record", "empty journal: nothing checked");
+    lacks(c.chain, "another format", "empty journal: not called outside scope");
+  }
+  c = te.coverage(await te.verifyStream("this is not json\n"), false);
+  has(c.chain, "Nothing checked: 1 line is not a readable record", "one non-JSON line: nothing checked");
+  lacks(c.chain, "hashes recomputed", "one non-JSON line: no hash was recomputed");
+  c = te.coverage(await te.verifyStream(st("invalid-utf8-line.jsonl")), false);
+  has(c.chain, "Checked for 2 of 3 records", "a line that is not UTF-8: checked for the others");
+  has(c.chain, "1 line is not a readable record of this format and was not checked", "a line that is not UTF-8: named");
+  const one = ex("transfer-worker.jsonl").split("\n")[0] + "\n";
+  c = te.coverage(await te.verifyStream(one), false);
+  has(c.chain, "Checked for the one record", "one record: no \"all 1 record\"");
+  has(c.chain, "it holds together", "one record: singular");
+  has(c.profiles, "1 record names no profile", "one record: profiles row singular");
+  c = te.coverage(await te.verifyStream(st("signed.jsonl").split("\n")[0] + "\n"), false);
+  has(c.signatures, "Not checked: 1 record carries a signature", "one signed record: singular");
+  c = te.coverage(await te.verifyStream(st("signature-invalid.jsonl"), { publicKey: key }), true);
+  has(c.signatures, "1 record carries no signature", "one unsigned record with a key: singular");
+  c = te.coverage(await te.verifyStream(ex("transfer-worker.jsonl")), false);
+  has(c.completeness, "cut off at its end", "completeness names records cut off at the end");
+  has(c.completeness, "redaction", "completeness names the members that are not hashed");
+}
+
+// The static text of the page agrees with the coverage block and points to
+// the section of SPEC.md that lists the limits.
+function testPageText() {
+  section("web/index.html");
+  const html = read(path.join(HERE, "..", "index.html"));
+  check(html.includes("section 6.6"), "the page points to SPEC.md section 6.6 for the limits");
+  check(!html.includes("section 6.3"), "the page does not point to section 6.3 for the limits");
+  check(!html.includes("No record in this file was altered, removed or reordered"), "the page does not claim that no record was removed");
+  for (const part of ["cut off at its end", "redaction", "not hashed"]) check(html.includes(part), `the page names: ${part}`);
+}
+
+// A journal that cannot be read gets no verdict and no report (exit 2, a
+// message, no stack trace); an empty journal is incomplete, also with
+// --allow-incomplete (SPEC.md section 6.4).
+async function testInputErrors() {
+  section("input errors and empty journals");
+  const dir = mkdtempSync(path.join(tmpdir(), "te-input-"));
+  try {
+    const unreadable = path.join(dir, "unreadable.jsonl");
+    writeFileSync(unreadable, "{}\n");
+    chmodSync(unreadable, 0o000);
+    const cases = [["directory", dir], ["missing file", path.join(dir, "missing.jsonl")]];
+    try {
+      closeSync(openSync(unreadable, "r")); // running as root: permissions do not apply
+    } catch (err) {
+      cases.push(["file without read permission", unreadable]);
+    }
+    const self = fileURLToPath(import.meta.url);
+    for (const [name, p] of cases) {
+      for (const extra of [[], ["--allow-incomplete"]]) {
+        const r = spawnSync(process.execPath, [self, "report", p, ...extra], { encoding: "utf8" });
+        eq([r.status, r.stdout], [2, ""], `${name} ${extra.join(" ")}: exit 2 and no report`);
+        check(r.stderr.trim() !== "" && !/\n\s+at /.test(r.stderr), `${name}: one message, no stack trace (${JSON.stringify(r.stderr.slice(0, 120))})`);
+      }
+    }
+    for (const content of ["", "\n \n\t\r\n"]) {
+      for (const allowIncomplete of [false, true]) {
+        const rep = await te.verifyStream(new TextEncoder().encode(content), { allowIncomplete });
+        eq([rep.ok, rep.verdict, te.exitCode(rep)], [false, te.VERDICT_INCOMPLETE, 3], `empty journal ${JSON.stringify(content)} allow=${allowIncomplete}`);
+        eq(te.summary(rep), "INCOMPLETE: 0 record(s) in 0 stream(s), no record: nothing was verified", "empty journal: summary line");
+      }
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 async function main() {
   await coverageTests();
   const args = process.argv.slice(2);
   if (args[0] === "report" || args[0] === "verify") {
-    process.exit(await reportMode(args.slice(1)));
+    process.exit(await reportMode(args.slice(1), args[0] === "verify"));
   }
   if (args[0] === "hash") {
     process.exit(await hashMode(args.slice(1)));
@@ -548,6 +657,8 @@ async function main() {
   await testExamples();
   await testSchemaGate();
   await testProfiles();
+  await testInputErrors();
+  testPageText();
   if (failures) {
     console.error(`\n${failures} of ${checks} checks failed`);
     process.exit(1);

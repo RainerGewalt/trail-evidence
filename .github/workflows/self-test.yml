@@ -123,6 +123,36 @@ jobs:
           test "$OUTCOME" = failure
           test "$REQUIRED_VERDICT" = incomplete
 
+      - name: a journal without a record fails, also with allow-incomplete
+        id: empty
+        uses: ./
+        continue-on-error: true
+        with:
+          journal: testdata/streams/empty.jsonl
+          allow-incomplete: "true"
+
+      - name: a directory is not a journal and gets no verdict
+        id: directory
+        uses: ./
+        continue-on-error: true
+        with:
+          journal: testdata/keys
+
+      - shell: bash
+        env:
+          EMPTY_OUTCOME: ${{ steps.empty.outcome }}
+          EMPTY_VERDICT: ${{ steps.empty.outputs.verdict }}
+          EMPTY_RECORDS: ${{ steps.empty.outputs.records }}
+          DIR_OUTCOME: ${{ steps.directory.outcome }}
+          DIR_VERDICT: ${{ steps.directory.outputs.verdict }}
+        run: |
+          set -euo pipefail
+          test "$EMPTY_OUTCOME" = failure
+          test "$EMPTY_VERDICT" = incomplete
+          test "$EMPTY_RECORDS" = 0
+          test "$DIR_OUTCOME" = failure
+          test -z "$DIR_VERDICT"
+
       - name: unsigned journal with required signatures fails
         id: unsigned
         uses: ./

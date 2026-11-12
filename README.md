@@ -12,7 +12,8 @@
 verifier, or run one command, and get a verdict: `valid`, `invalid` or
 `incomplete`, with the first record that breaks the chain, the line it is on
 and the recorded versus the recomputed hash. The same check exists in Go,
-Python and JavaScript, and all three agree on every test vector.
+Python and JavaScript, and all three reach the same report on every case of
+the conformance suite, malformed input included.
 
 Trail Evidence is the record format behind that check: one JSON object per
 event, chained to the previous one by a hash and optionally signed. Any
@@ -26,10 +27,11 @@ verifier does not need to know what produced the journal.
 https://rainergewalt.github.io/trail-evidence/
 ```
 
-![The browser verifier after loading the tampered example: verdict INVALID, 4 records in 1 stream with 2 errors; 3 records are valid and 1 is invalid.](docs/screenshots/browser-verifier-invalid.png)
+![The browser verifier after loading the tampered example: verdict INVALID, 4 records in 1 stream with 2 errors; below it what the verdict covers (hash chain checked for all 4 records, 1 fails; no signatures; no profiles; what a passing chain does not show); 3 records are valid and 1 is invalid.](docs/screenshots/browser-verifier-invalid.png)
 
 *The tampered example in the browser verifier: one edited record turns the
-verdict to `invalid`.*
+verdict to `invalid`, and the block below it says what the verdict covers
+and what it does not.*
 
 Drop a `.jsonl` journal on the page, optionally paste the producer's
 Ed25519 public key (hex, base64url or PEM), and read the verdict, the state
@@ -83,7 +85,9 @@ emit it today. `SPEC.md` section 8 describes the mapping for each kind.
 
 ## Install
 
-Three ways, all with the same verifier and the same results.
+Three ways. The release binary and `go install` give the Go verifier; the
+Python package is a second implementation that reaches the same reports on
+the conformance suite (`scripts/crosscheck.sh`).
 
 **Prebuilt binary.** Each release carries archives for Linux, macOS and
 Windows on amd64 and arm64, each with the binary, `LICENSE` and `SPEC.md`,
@@ -162,7 +166,8 @@ and the journal a verdict:
 |---|---|---|
 | `valid` | every record is `valid` | 0 |
 | `invalid` | at least one record is `invalid` | 1 |
-| `incomplete` | no record is `invalid`, but at least one is `unknown` or `outside_scope` | 3 |
+| `incomplete` | no record is `invalid`, but at least one is `unknown` or `outside_scope`; or the journal has no record at all | 3 |
+| none | the journal cannot be read (a directory, a missing or unreadable file, an error while reading): no report | 2 |
 
 `incomplete` fails by default, because a record deleted from the middle of a
 journal leads there. `--allow-incomplete` accepts it (exit code 0) for
@@ -170,8 +175,17 @@ journals known to be incomplete, such as rotated logs or excerpts. A profile
 the verifier does not know leaves the payload unchecked (profile state
 `outside_scope`, notice `profile_unknown`) but does not change the verdict;
 `--require-known-profiles` makes such records count as incomplete, and
-`--allow-incomplete` does not accept those. Exit code 2 is a usage or I/O
-error.
+`--allow-incomplete` does not accept those, and it does not accept a journal
+without any record either. Exit code 2 is a usage error or a journal that
+cannot be read.
+
+Every non-blank line has to be one JSON object read by the rules of
+`SPEC.md` section 2: valid UTF-8, no member name twice in one object, no
+unpaired surrogate, at most 64 levels of nesting, nothing else on the line.
+A line that breaks a rule is `schema_invalid`. The summary line says what
+was not checked: `signatures not checked (no key)`, `no record is signed`,
+the number of verified signatures, `with unknown profile (payload not
+checked)`.
 
 `--json` prints the full report, including `verdict` and `results` with the
 state and profile state of every record. `trail-evidence hash record.json`
@@ -181,11 +195,18 @@ the verifier knows. `trail-evidence-py` takes the same arguments for
 `verify`, `hash` and `profiles`; it has no `version` command
 (`pip show trail-evidence` shows the installed version).
 
-`verify` recomputes every hash and follows every link. The verdict `valid`
-means no record in the file was altered, removed or reordered relative to
-the others. It does not mean the payloads are true, that the clock was right
-(`time.source` says what the producer knew about that), or that nobody
-rewrote the whole file: for that you need signatures (`--pubkey`) or an
+`verify` recomputes every hash and follows every link. With the verdict
+`valid`, a change to a hashed member, or a record reordered or removed from
+between two others, would have shown up, unless every record after it was
+sealed again. It does not mean the payloads are true, that the clock was
+right (`time.source` says what the producer knew about that), or that the
+journal is complete: records cut off at its end leave no trace. Nor does it
+cover members that are not hashed (`job_id`, `correlation_id`,
+`decision_id`, `context`, `redaction`, `anchor`, `signature`): they can be
+changed without a finding, and `redaction` claims which payload members
+were masked without anything protecting that claim. Against a rewritten
+file you need signatures (`--pubkey` with `--require-signatures`, because a
+key alone does not fail a journal whose signatures were removed) or an
 external anchor of the latest `chain_hash`. `SPEC.md` section 6.6 lists these
 limits.
 
@@ -292,6 +313,7 @@ if err := evidence.Sign(&r, privateKey, ""); err != nil { /* ... */ }
 line, _ := json.Marshal(&r) // append line + "\n" to the journal
 
 rep := evidence.VerifyStream(file, evidence.Options{PublicKey: pub})
+if err := rep.Err(); err != nil { /* the journal could not be read: no verdict */ }
 fmt.Println(rep.Summary(), rep.Verdict, rep.ExitCode())
 for _, res := range rep.Results {
     fmt.Println(res.Index, res.State, res.ProfileState)
@@ -312,14 +334,18 @@ record = {
     "payload": {"metrics": {"dice": "0.9132"}, "reason_code": "ml.metrics_accepted"},
 }
 seal(record, GENESIS_HASH)
-sign(record, seed_bytes)            # optional
-with open("journal.jsonl") as fh:
+sign(record, seed_bytes)            # optional, see below
+with open("journal.jsonl", "rb") as fh:    # binary: lines end at \n only
     report = verify_stream(fh, public_key_bytes)
 print(report.summary(), report.verdict, report.exit_code())
 print([r.state for r in report.results])
 ```
 
 `seal()` accepts `seq` as an int or a decimal string and writes the string.
+`sign()` uses the package's own Ed25519 code, which is written for clarity
+and tests, not for side-channel resistance (`python/README.md`). A producer
+that signs real evidence should sign with a reviewed library, such as
+`cryptography`, and can keep this package for verification.
 `examples/` has one verifiable journal per producer kind.
 
 ## GitHub Action
@@ -375,8 +401,10 @@ The action installs the verifier that matches its own tag with
 and falls back to the release archive, checked against `checksums.txt`.
 Referenced by branch, commit or as `uses: ./`, it builds the verifier from
 its own checkout. It writes a table with one row per journal (verdict,
-records, invalid, unknown, outside scope, errors, notices, signed) to the
-job summary and an annotation per error finding. It needs `jq`, which GitHub-hosted runners
+records, invalid, unknown, outside scope, errors, notices, signed, and
+signatures verified, or "not checked (no key)" without `pubkey`) to the
+job summary, says above it what the verdict does not cover, and adds an
+annotation per error finding. It needs `jq`, which GitHub-hosted runners
 have; `.github/workflows/self-test.yml` runs it on Linux, macOS and Windows.
 To read the outputs of a failing run, set `continue-on-error: true` on the
 step.
@@ -427,7 +455,7 @@ scripts/conformance.sh /path/to/your-verifier
 # …
 # ok   seq-decimal.jsonl  [mandatory: seq compared as integers beyond 2^53 and up to 2^64 - 1]
 # …
-# conformant: 21 vectors and 29 stream cases of trail.evidence/1, format 0.2 (suite v0.2.0)
+# conformant: 21 vectors, 47 stream cases and 6 input errors of trail.evidence/1, format 0.2 (suite …)
 ```
 
 The command must offer `hash <record.json>` (prints `payload_jcs`,
@@ -437,7 +465,8 @@ and `verify <journal.jsonl> [--pubkey <file>] [--require-signatures]
 [--allow-incomplete] [--require-known-profiles] --json` (prints `ok`,
 `verdict`, `records`, `restarts`, `findings` with `index` and `class`, and
 `results` with `state` and `profile_state`; exit 0 when ok, 1 for invalid,
-3 for incomplete), like the reference CLI. The script needs only `python3`. The Go,
+3 for incomplete, and 2 without a report for a journal it cannot read), like
+the reference CLI. The script needs only `python3`. The Go,
 Python and JavaScript implementations in this repository pass it in CI.
 
 ## Spec

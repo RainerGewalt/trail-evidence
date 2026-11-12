@@ -128,14 +128,23 @@
         Every <code>content_hash</code> and <code>chain_hash</code> was recomputed from the
         record itself (RFC 8785 canonical JSON, SHA-256) and matched, every record links to
         the declared <code>chain_hash</code> of its predecessor, and sequence numbers increase
-        by one per stream. No record in this file was altered, removed or reordered relative to
-        the others.
+        by one per stream. A change to a hashed member of a record, or a record reordered or
+        removed from between two others, would have shown up, unless every record after it was
+        sealed again.
       </p>
       <p>
-        It does not say that the payloads are true, that the clocks were right, or that nobody
-        rewrote the whole file. Signatures bind the chain to a key; give the public key above to
-        have them checked. Anchoring the latest <code>chain_hash</code> elsewhere binds it to a
-        point in time. The specification lists these limits in section 6.3.
+        It does not say that the payloads are true, that the clocks were right, that nobody
+        sealed the chain again from some record onward, or that the file is complete: records
+        cut off at its end leave no trace. Members that are not hashed (<code>job_id</code>, <code>correlation_id</code>,
+        <code>decision_id</code>, <code>context</code>, <code>redaction</code>, <code>anchor</code>,
+        <code>signature</code>) can be changed without a finding; <code>redaction</code> claims
+        which payload members were masked, and nothing protects that claim. Signatures bind the
+        chain to a key: give the public key above to have them checked, and tick
+        <em>Require a signature on every record</em>, because without it a journal whose
+        signatures were removed still passes. Anchoring the latest <code>chain_hash</code>
+        elsewhere binds it to a point in time and shows whether records are missing at the end.
+        A file without any record never passes. The specification lists these limits in
+        section 6.6.
       </p>
       <p>
         Every record gets one of four states. <strong>valid</strong>: all checks ran and passed.
@@ -167,7 +176,8 @@
       <a href="https://github.com/RainerGewalt/trail-evidence">Repository</a> ·
       <a href="https://github.com/RainerGewalt/trail-evidence/blob/main/SPEC.md">Specification</a> ·
       Format <code>trail.evidence/1</code> (v0.2 draft) ·
-      Same results as the Go and Python verifiers, checked by the test suite.
+      Same results as the Go and Python verifiers on every case of the conformance suite,
+      malformed input included.
     </p>
     <p>Hashing uses WebCrypto; Ed25519 signature checks need a browser whose WebCrypto implements Ed25519 (current Chrome, Firefox and Safari). Otherwise signatures are reported as not checked.</p>
   </footer>

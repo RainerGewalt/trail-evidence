@@ -881,6 +881,522 @@
         "outside_scope",
         "valid"
       ]
+    },
+    {
+      "file": "dup-payload-member.jsonl",
+      "description": "Record 0 carries the member status twice in its payload, \"failed\" before the original \"ok\". A parser that keeps the last value sees the sealed record and matching hashes, one that keeps the first sees a failed job. Duplicate member names are not allowed at any depth (SPEC.md section 2): record 0 is schema_invalid and has no position, so record 1 links to a predecessor the chain does not have (seq_gap, unknown) and record 2 is valid relative to it (after_unknown).",
+      "verdict": "invalid",
+      "ok": false,
+      "exit_code": 1,
+      "records": 4,
+      "restarts": 0,
+      "findings": [
+        {
+          "index": 0,
+          "class": "schema_invalid"
+        },
+        {
+          "index": 1,
+          "class": "seq_gap"
+        },
+        {
+          "index": 2,
+          "class": "after_unknown"
+        }
+      ],
+      "states": [
+        "invalid",
+        "unknown",
+        "valid",
+        "valid"
+      ],
+      "profile_states": [
+        "none",
+        "none",
+        "none",
+        "none"
+      ]
+    },
+    {
+      "file": "dup-top-payload.jsonl",
+      "description": "Record 0 has a second, forged payload member before the sealed one. schema_invalid (duplicate member name), no position; the rest as in dup-payload-member.jsonl.",
+      "verdict": "invalid",
+      "ok": false,
+      "exit_code": 1,
+      "records": 4,
+      "restarts": 0,
+      "findings": [
+        {
+          "index": 0,
+          "class": "schema_invalid"
+        },
+        {
+          "index": 1,
+          "class": "seq_gap"
+        },
+        {
+          "index": 2,
+          "class": "after_unknown"
+        }
+      ],
+      "states": [
+        "invalid",
+        "unknown",
+        "valid",
+        "valid"
+      ],
+      "profile_states": [
+        "none",
+        "none",
+        "none",
+        "none"
+      ]
+    },
+    {
+      "file": "dup-top-seq.jsonl",
+      "description": "Record 0 carries seq twice, \"5\" before the sealed \"0\". schema_invalid (duplicate member name), no position; the rest as in dup-payload-member.jsonl.",
+      "verdict": "invalid",
+      "ok": false,
+      "exit_code": 1,
+      "records": 4,
+      "restarts": 0,
+      "findings": [
+        {
+          "index": 0,
+          "class": "schema_invalid"
+        },
+        {
+          "index": 1,
+          "class": "seq_gap"
+        },
+        {
+          "index": 2,
+          "class": "after_unknown"
+        }
+      ],
+      "states": [
+        "invalid",
+        "unknown",
+        "valid",
+        "valid"
+      ],
+      "profile_states": [
+        "none",
+        "none",
+        "none",
+        "none"
+      ]
+    },
+    {
+      "file": "dup-escaped-name.jsonl",
+      "description": "Record 0 carries \"st\\u0061tus\":\"failed\" before \"status\":\"ok\". Names are compared after their escapes are decoded, so both are the member status: schema_invalid (duplicate member name), no position; the rest as in dup-payload-member.jsonl.",
+      "verdict": "invalid",
+      "ok": false,
+      "exit_code": 1,
+      "records": 4,
+      "restarts": 0,
+      "findings": [
+        {
+          "index": 0,
+          "class": "schema_invalid"
+        },
+        {
+          "index": 1,
+          "class": "seq_gap"
+        },
+        {
+          "index": 2,
+          "class": "after_unknown"
+        }
+      ],
+      "states": [
+        "invalid",
+        "unknown",
+        "valid",
+        "valid"
+      ],
+      "profile_states": [
+        "none",
+        "none",
+        "none",
+        "none"
+      ]
+    },
+    {
+      "file": "dup-nested-member.jsonl",
+      "description": "Duplicate member names below the top level: record 1 in an object inside an array of its payload, record 2 in producer, record 3 in context, which is not hashed. Each is schema_invalid and has no position. Record 4 links to record 3, which the chain therefore does not have: seq_gap, unknown.",
+      "verdict": "invalid",
+      "ok": false,
+      "exit_code": 1,
+      "records": 5,
+      "restarts": 0,
+      "findings": [
+        {
+          "index": 1,
+          "class": "schema_invalid"
+        },
+        {
+          "index": 2,
+          "class": "schema_invalid"
+        },
+        {
+          "index": 3,
+          "class": "schema_invalid"
+        },
+        {
+          "index": 4,
+          "class": "seq_gap"
+        }
+      ],
+      "states": [
+        "valid",
+        "invalid",
+        "invalid",
+        "invalid",
+        "unknown"
+      ],
+      "profile_states": [
+        "none",
+        "none",
+        "none",
+        "none",
+        "none"
+      ]
+    },
+    {
+      "file": "trailing-data.jsonl",
+      "description": "Nothing but JSON white space may follow the object on a line. Line 1 ends in \" x\" (not JSON), line 2 holds two records separated by a carriage return, which is white space and not a line break, line 3 ends in \" {}\". Each line is one schema_invalid record without a position.",
+      "verdict": "invalid",
+      "ok": false,
+      "exit_code": 1,
+      "records": 3,
+      "restarts": 0,
+      "findings": [
+        {
+          "index": 0,
+          "class": "schema_invalid"
+        },
+        {
+          "index": 1,
+          "class": "schema_invalid"
+        },
+        {
+          "index": 2,
+          "class": "schema_invalid"
+        }
+      ],
+      "states": [
+        "invalid",
+        "invalid",
+        "invalid"
+      ],
+      "profile_states": [
+        "none",
+        "none",
+        "none"
+      ]
+    },
+    {
+      "file": "invalid-utf8-in-string.jsonl",
+      "description": "Record 0 was sealed with U+FFFD inside a payload string; in the file the three bytes of U+FFFD were replaced by the byte 0xFF, which is not UTF-8. A reader that decodes with replacement characters sees the sealed record and matching hashes. A line must be valid UTF-8: record 0 is schema_invalid, no position, record 1 is unknown (seq_gap).",
+      "verdict": "invalid",
+      "ok": false,
+      "exit_code": 1,
+      "records": 2,
+      "restarts": 0,
+      "findings": [
+        {
+          "index": 0,
+          "class": "schema_invalid"
+        },
+        {
+          "index": 1,
+          "class": "seq_gap"
+        }
+      ],
+      "states": [
+        "invalid",
+        "unknown"
+      ],
+      "profile_states": [
+        "none",
+        "none"
+      ]
+    },
+    {
+      "file": "invalid-utf8-line.jsonl",
+      "description": "Line 2 is not UTF-8 at all (bytes 0xB1 0x8F 0xFF and text): schema_invalid, no position. The records around it are chained and valid.",
+      "verdict": "invalid",
+      "ok": false,
+      "exit_code": 1,
+      "records": 3,
+      "restarts": 0,
+      "findings": [
+        {
+          "index": 1,
+          "class": "schema_invalid"
+        }
+      ],
+      "states": [
+        "valid",
+        "invalid",
+        "valid"
+      ],
+      "profile_states": [
+        "none",
+        "none",
+        "none"
+      ]
+    },
+    {
+      "file": "nesting-depth.jsonl",
+      "description": "Record 0 is nested exactly 64 levels deep (the record object and 63 arrays in its payload) and valid. Record 1 is 65 levels deep and record 2 3000 levels deep; both are correctly sealed, but a line may nest at most 64 levels: schema_invalid, no position.",
+      "verdict": "invalid",
+      "ok": false,
+      "exit_code": 1,
+      "records": 3,
+      "restarts": 0,
+      "findings": [
+        {
+          "index": 1,
+          "class": "schema_invalid"
+        },
+        {
+          "index": 2,
+          "class": "schema_invalid"
+        }
+      ],
+      "states": [
+        "valid",
+        "invalid",
+        "invalid"
+      ],
+      "profile_states": [
+        "none",
+        "none",
+        "none"
+      ]
+    },
+    {
+      "file": "unpaired-surrogate.jsonl",
+      "description": "Strings with an unpaired surrogate escape: record 1 a high surrogate at the end of a payload string, record 2 a low surrogate in context, which is not hashed, record 3 a high surrogate followed by \\u0041. Such strings have no defined UTF-8 form: schema_invalid, no position.",
+      "verdict": "invalid",
+      "ok": false,
+      "exit_code": 1,
+      "records": 4,
+      "restarts": 0,
+      "findings": [
+        {
+          "index": 1,
+          "class": "schema_invalid"
+        },
+        {
+          "index": 2,
+          "class": "schema_invalid"
+        },
+        {
+          "index": 3,
+          "class": "schema_invalid"
+        }
+      ],
+      "states": [
+        "valid",
+        "invalid",
+        "invalid",
+        "invalid"
+      ],
+      "profile_states": [
+        "none",
+        "none",
+        "none",
+        "none"
+      ]
+    },
+    {
+      "file": "json-whitespace.jsonl",
+      "description": "Only space, tab and carriage return are white space around a record, and only a line of them is blank. Record 0 is surrounded by a tab and spaces and valid. Record 1 starts with U+00A0, record 2 is a line with only U+3000, record 3 a line with only U+001C, record 4 a line with only a vertical tab and a form feed: schema_invalid each, no position. Record 5 links to record 1 (seq_gap, unknown), record 6 is valid after it (after_unknown). The blank lines between them are skipped.",
+      "verdict": "invalid",
+      "ok": false,
+      "exit_code": 1,
+      "records": 7,
+      "restarts": 0,
+      "findings": [
+        {
+          "index": 1,
+          "class": "schema_invalid"
+        },
+        {
+          "index": 2,
+          "class": "schema_invalid"
+        },
+        {
+          "index": 3,
+          "class": "schema_invalid"
+        },
+        {
+          "index": 4,
+          "class": "schema_invalid"
+        },
+        {
+          "index": 5,
+          "class": "seq_gap"
+        },
+        {
+          "index": 6,
+          "class": "after_unknown"
+        }
+      ],
+      "states": [
+        "valid",
+        "invalid",
+        "invalid",
+        "invalid",
+        "invalid",
+        "unknown",
+        "valid"
+      ],
+      "profile_states": [
+        "none",
+        "none",
+        "none",
+        "none",
+        "none",
+        "none",
+        "none"
+      ]
+    },
+    {
+      "file": "tail-truncated.jsonl",
+      "description": "The first two of the four records of examples/transfer-worker.jsonl: the last two were cut off. The remaining records still link to each other, so the journal is valid. Nothing in a journal shows that records are missing at its end (SPEC.md section 6.6).",
+      "verdict": "valid",
+      "ok": true,
+      "exit_code": 0,
+      "records": 2,
+      "restarts": 0,
+      "findings": [],
+      "states": [
+        "valid",
+        "valid"
+      ],
+      "profile_states": [
+        "none",
+        "none"
+      ]
+    },
+    {
+      "file": "unhashed-members-changed.jsonl",
+      "description": "examples/transfer-worker.jsonl after sealing: job_id of record 0 changed, context added to record 1, a redaction member added to record 2 that claims a payload member was masked, correlation_id added to record 3. None of these members is hashed (SPEC.md section 4.1), so the journal is valid (section 6.6).",
+      "verdict": "valid",
+      "ok": true,
+      "exit_code": 0,
+      "records": 4,
+      "restarts": 0,
+      "findings": [],
+      "states": [
+        "valid",
+        "valid",
+        "valid",
+        "valid"
+      ],
+      "profile_states": [
+        "none",
+        "none",
+        "none",
+        "none"
+      ]
+    },
+    {
+      "file": "signatures-stripped.jsonl",
+      "description": "The records of signed.jsonl with every signature removed, verified with the test public key but without --require-signatures: valid, because a key alone checks only the signatures that are present (SPEC.md section 6.6).",
+      "pubkey": "../keys/test-ed25519.pub",
+      "verdict": "valid",
+      "ok": true,
+      "exit_code": 0,
+      "records": 3,
+      "restarts": 0,
+      "findings": [],
+      "states": [
+        "valid",
+        "valid",
+        "valid"
+      ],
+      "profile_states": [
+        "none",
+        "none",
+        "none"
+      ]
+    },
+    {
+      "file": "signatures-stripped.jsonl",
+      "description": "The same journal with --require-signatures: every record is signature_invalid.",
+      "pubkey": "../keys/test-ed25519.pub",
+      "require_signatures": true,
+      "verdict": "invalid",
+      "ok": false,
+      "exit_code": 1,
+      "records": 3,
+      "restarts": 0,
+      "findings": [
+        {
+          "index": 0,
+          "class": "signature_invalid"
+        },
+        {
+          "index": 1,
+          "class": "signature_invalid"
+        },
+        {
+          "index": 2,
+          "class": "signature_invalid"
+        }
+      ],
+      "states": [
+        "invalid",
+        "invalid",
+        "invalid"
+      ],
+      "profile_states": [
+        "none",
+        "none",
+        "none"
+      ]
+    },
+    {
+      "file": "empty.jsonl",
+      "description": "An empty file (0 bytes). A journal without a record shows nothing about any record, so its verdict is incomplete, which fails (exit code 3).",
+      "verdict": "incomplete",
+      "ok": false,
+      "exit_code": 3,
+      "records": 0,
+      "restarts": 0,
+      "findings": [],
+      "states": [],
+      "profile_states": []
+    },
+    {
+      "file": "empty.jsonl",
+      "description": "The same file with --allow-incomplete: a journal without a record still fails (exit code 3); allow incomplete accepts journals with unknown or outside_scope records, not journals without any.",
+      "allow_incomplete": true,
+      "verdict": "incomplete",
+      "ok": false,
+      "exit_code": 3,
+      "records": 0,
+      "restarts": 0,
+      "findings": [],
+      "states": [],
+      "profile_states": []
+    },
+    {
+      "file": "blank-lines.jsonl",
+      "description": "Only blank lines (empty, a space, a tab with a carriage return): no record, verdict incomplete, exit code 3.",
+      "verdict": "incomplete",
+      "ok": false,
+      "exit_code": 3,
+      "records": 0,
+      "restarts": 0,
+      "findings": [],
+      "states": [],
+      "profile_states": []
     }
   ]
 }

@@ -44,8 +44,11 @@ checksum:
   name_template: checksums.txt
   algorithm: sha256
 
+# The release notes are the section of CHANGELOG.md for the tag: the release
+# workflow extracts it and passes it with --release-notes, which replaces the
+# generated changelog. (With disable: true GoReleaser would drop it as well.)
 changelog:
-  disable: true
+  disable: false
 
 release:
   github:
@@ -54,15 +57,15 @@ release:
   prerelease: auto
   mode: keep-existing
   header: |
-    Trail Evidence Record verifier {{ .Tag }}. Binaries for Linux, macOS and
-    Windows (amd64, arm64); each archive contains `LICENSE` and `SPEC.md`,
-    `checksums.txt` holds the SHA-256 of every archive.
+    Try it: `go install github.com/RainerGewalt/trail-evidence/go/cmd/trail-evidence@{{ .Tag }}`, then `trail-evidence verify journal.jsonl`; or drop a journal on https://rainergewalt.github.io/trail-evidence/ (nothing is uploaded).
 
-    Other ways to install: `go install github.com/RainerGewalt/trail-evidence/go/cmd/trail-evidence@{{ .Tag }}`
-    (needs the module tag `go/{{ .Tag }}`, which the release workflow pushes),
-    `pip install trail-evidence` (uploaded by the release workflow through
-    PyPI trusted publishing once it is set up, see docs/RELEASING.md),
-    or the GitHub Action `RainerGewalt/trail-evidence@{{ .Tag }}`.
+    Binaries for Linux, macOS and Windows (amd64, arm64) are attached; each
+    archive contains `LICENSE` and `SPEC.md`, and `checksums.txt` holds the
+    SHA-256 of every archive. Python: `pip install trail-evidence=={{ .Version }}`
+    (uploaded to PyPI by the same release workflow through trusted
+    publishing). GitHub Action: `RainerGewalt/trail-evidence@{{ .Tag }}`.
+
+    Changes in {{ .Version }}, from [CHANGELOG.md](https://github.com/RainerGewalt/trail-evidence/blob/{{ .Tag }}/CHANGELOG.md):
 
 snapshot:
   version_template: "{{ incpatch .Version }}-next"

@@ -414,6 +414,141 @@
     }
   }
 
+  // ---------------------------------------------------------------- reading rules
+  //
+  // SPEC.md section 2: a record line is exactly one JSON object, valid UTF-8,
+  // with unique member names in every object, no string with an unpaired
+  // surrogate, nested at most MAX_DEPTH levels, and nothing but JSON white
+  // space around it. JSON.parse already rejects data after the object; it
+  // keeps the last of two members with the same name and accepts unpaired
+  // surrogates, so those are checked here. verifyStream decodes bytes line by
+  // line and reports a line that is not UTF-8.
+
+  const MAX_DEPTH = 64;
+  const JSON_WS_TRIM_RE = /^[ \t\n\r]+|[ \t\n\r]+$/g;
+
+  /** Deepest nesting of objects and arrays, counting brackets outside strings. */
+  function nestingDepth(t) {
+    let depth = 0;
+    let deepest = 0;
+    let inString = false;
+    for (let i = 0; i < t.length; i++) {
+      const c = t.charCodeAt(i);
+      if (inString) {
+        if (c === 0x5c) i++;
+        else if (c === 0x22) inString = false;
+        continue;
+      }
+      if (c === 0x22) {
+        inString = true;
+      } else if (c === 0x7b || c === 0x5b) {
+        depth++;
+        if (depth > deepest) deepest = depth;
+      } else if (c === 0x7d || c === 0x5d) {
+        depth--;
+      }
+    }
+    return deepest;
+  }
+
+  /** True when s holds a surrogate code unit that is not part of a pair. */
+  function hasUnpairedSurrogate(s) {
+    for (let i = 0; i < s.length; i++) {
+      const c = s.charCodeAt(i);
+      if (c >= 0xd800 && c <= 0xdbff) {
+        const d = i + 1 < s.length ? s.charCodeAt(i + 1) : 0;
+        if (d >= 0xdc00 && d <= 0xdfff) {
+          i++;
+          continue;
+        }
+        return true;
+      }
+      if (c >= 0xdc00 && c <= 0xdfff) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Walk a JSON text that JSON.parse has accepted. Returns a problem or null:
+   * an unpaired surrogate in any string or member name, or a name that occurs
+   * twice in one object. Names are compared after their escapes are decoded,
+   * so "a" and "\u0061" are the same name.
+   */
+  function checkNames(t) {
+    const stack = [];
+    for (let i = 0; i < t.length; i++) {
+      const c = t[i];
+      if (c === '"') {
+        const end = scanString(t, i);
+        const s = JSON.parse(t.slice(i, end));
+        if (hasUnpairedSurrogate(s)) return "string with an unpaired surrogate";
+        const top = stack[stack.length - 1];
+        if (top && top.object && top.expectKey) {
+          if (top.names.has(s)) return "duplicate member name " + JSON.stringify(s);
+          top.names.add(s);
+          top.expectKey = false;
+        }
+        i = end - 1;
+      } else if (c === "{") {
+        stack.push({ object: true, expectKey: true, names: new Set() });
+      } else if (c === "[") {
+        stack.push({ object: false, expectKey: false, names: null });
+      } else if (c === "}" || c === "]") {
+        stack.pop();
+      } else if (c === ",") {
+        const top = stack[stack.length - 1];
+        if (top && top.object) top.expectKey = true;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Read one record line (text) under the reading rules. Returns {record,
+   * problem}: the parsed object and null, or null and what is wrong.
+   */
+  function parseRecordLine(raw) {
+    if (nestingDepth(raw) > MAX_DEPTH) return { record: null, problem: "nesting deeper than " + MAX_DEPTH + " levels" };
+    let value;
+    try {
+      value = JSON.parse(raw);
+    } catch (err) {
+      return { record: null, problem: "invalid JSON: " + err.message };
+    }
+    if (!isObj(value)) return { record: null, problem: "record is not a JSON object" };
+    const problem = checkNames(raw);
+    if (problem !== null) return { record: null, problem };
+    return { record: value, problem: null };
+  }
+
+  const utf8Decoder = typeof TextDecoder === "function" ? new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }) : null;
+
+  /**
+   * The lines of a journal. A string is split at line feeds as it is. Bytes
+   * (Uint8Array, ArrayBuffer) are split at line feeds and each line is
+   * decoded on its own; a line that is not UTF-8 becomes null.
+   */
+  function journalLines(input) {
+    if (!(input instanceof ArrayBuffer || ArrayBuffer.isView(input))) return String(input).split("\n");
+    const bytes = input instanceof ArrayBuffer ? new Uint8Array(input) : new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
+    const lines = [];
+    let start = 0;
+    for (;;) {
+      const end = bytes.indexOf(0x0a, start);
+      const slice = bytes.subarray(start, end === -1 ? bytes.length : end);
+      let text = null;
+      try {
+        text = utf8Decoder.decode(slice);
+      } catch (err) {
+        text = null;
+      }
+      lines.push(text);
+      if (end === -1) break;
+      start = end + 1;
+    }
+    return lines;
+  }
+
   /** Raw item texts of a JSON array text. */
   function arrayItems(t) {
     const items = [];
@@ -929,17 +1064,17 @@
    * invalid or outside_scope (unknown needs the stream). Findings carry
    * index and line 0.
    */
+  function notARecord(findings, state) {
+    return { record: null, findings, state, profile: null, profileState: PROFILE_NONE, seq: parseSeq({}, null), restart: false };
+  }
+
   async function checkRecord(raw) {
-    const none = (findings, state) => ({ record: null, findings, state, profile: null, profileState: PROFILE_NONE, seq: parseSeq({}, null), restart: false });
-    let record;
-    try {
-      record = JSON.parse(raw);
-    } catch (err) {
-      return none([finding(SCHEMA_INVALID, ERROR, "invalid JSON: " + err.message)], INVALID);
+    const none = notARecord;
+    const parsed = parseRecordLine(raw);
+    if (parsed.record === null) {
+      return none([finding(SCHEMA_INVALID, ERROR, parsed.problem)], INVALID);
     }
-    if (!isObj(record)) {
-      return none([finding(SCHEMA_INVALID, ERROR, "record is not a JSON object")], INVALID);
-    }
+    const record = parsed.record;
     const foreign = foreignSchema(record);
     if (foreign !== null) {
       return none([finding(OUTSIDE_SCOPE, NOTICE, "schema " + q(foreign) + " is not " + SCHEMA + "; the record is not checked and does not take part in any chain")], OUTSIDE);
@@ -1099,17 +1234,17 @@
     }
   }
 
-  // Go's bytes.TrimSpace set: ASCII space characters, U+0085, U+00A0 and
-  // the Unicode Z categories, but not the byte order mark.
-  const TRIM_RE = /^(?:[^\S﻿]|\u0085)+|(?:[^\S﻿]|\u0085)+$/g;
-
-  /** Compute verdict and ok from the record states (SPEC.md section 6.4). */
+  /**
+   * Compute verdict and ok from the record states (SPEC.md section 6.4). A
+   * journal without a record is incomplete and never passes.
+   */
   function finishReport(report) {
     const unknownProfiles = report.require_known_profiles && report.profile_states[OUTSIDE] > 0;
+    const empty = report.records === 0;
     if (report.states[INVALID]) report.verdict = VERDICT_INVALID;
-    else if (report.states[UNKNOWN] || report.states[OUTSIDE] || unknownProfiles) report.verdict = VERDICT_INCOMPLETE;
+    else if (empty || report.states[UNKNOWN] || report.states[OUTSIDE] || unknownProfiles) report.verdict = VERDICT_INCOMPLETE;
     else report.verdict = VERDICT_VALID;
-    report.ok = report.verdict === VERDICT_VALID || (report.verdict === VERDICT_INCOMPLETE && report.allow_incomplete && !unknownProfiles);
+    report.ok = report.verdict === VERDICT_VALID || (report.verdict === VERDICT_INCOMPLETE && report.allow_incomplete && !unknownProfiles && !empty);
   }
 
   /** Exit code of the verify command: 0 ok, 1 invalid, 3 incomplete. */
@@ -1119,7 +1254,9 @@
   }
 
   /**
-   * Verify a JSON Lines journal given as text. Options: publicKey
+   * Verify a JSON Lines journal, given as bytes (Uint8Array or ArrayBuffer:
+   * split at line feeds and decoded line by line, as SPEC.md section 2 says)
+   * or as text that is already decoded. Options: publicKey
    * (Uint8Array of 32 bytes, optional), requireSignatures (boolean),
    * allowIncomplete (boolean: accept the verdict incomplete),
    * requireKnownProfiles (boolean: unknown profiles make the journal
@@ -1142,19 +1279,27 @@
       states: Object.fromEntries(STATES.map((k) => [k, 0])),
       profile_states: Object.fromEntries(PROFILE_STATES.map((k) => [k, 0])),
       streams: [], results: [], findings: [],
+      // Not part of the JSON report (reportToJSON): summary() uses it to say
+      // which signatures were not checked.
+      key_given: !!opts.publicKey,
     };
     const streams = new Map();
     const state = { ed25519: null };
-    const lines = String(text).split("\n");
+    const lines = journalLines(text);
     let index = -1;
     for (let i = 0; i < lines.length; i++) {
-      const trimmed = lines[i].replace(TRIM_RE, "");
+      // Only JSON white space makes a line blank (SPEC.md section 2).
+      const trimmed = lines[i] === null ? null : lines[i].replace(JSON_WS_TRIM_RE, "");
       if (trimmed === "") continue;
       const line = i + 1;
       index++;
       report.records++;
-      const c = await checkRecord(trimmed);
+      const c = trimmed === null ? notARecord([finding(SCHEMA_INVALID, ERROR, "line is not valid UTF-8")], INVALID) : await checkRecord(trimmed);
       const res = { index, line, stream_id: null, seq: null, state: c.state, profile: c.profile, profile_state: c.profileState };
+      // Not part of the JSON report: coverage() needs to know which lines
+      // were not a decodable record, so that it does not claim their hashes
+      // were recomputed.
+      if (c.record === null && c.state !== OUTSIDE) res.unreadable = true;
       let findings = c.findings.slice();
       if (c.record !== null) {
         const sid = c.record.stream_id;
@@ -1196,18 +1341,26 @@
   /** One-line summary in the style of the Go and Python CLIs. */
   function summary(r) {
     let s = r.verdict.toUpperCase() + (r.verdict === VERDICT_INCOMPLETE && r.ok ? " (allowed)" : "") + ": " + r.records + " record(s) in " + r.streams.length + " stream(s)";
+    if (r.records === 0) return s + ", no record: nothing was verified";
     if (r.verdict === VERDICT_INVALID) s += ", " + r.errors + " error(s)";
     else if (r.states[UNKNOWN]) s += ", no invalid record";
     else s += ", hash chain intact";
     if (r.states[UNKNOWN]) s += ", " + r.states[UNKNOWN] + " unknown";
     if (r.states[OUTSIDE]) s += ", " + r.states[OUTSIDE] + " outside scope";
-    if (r.profile_states[OUTSIDE]) s += ", " + r.profile_states[OUTSIDE] + " with unknown profile";
+    if (r.profile_states[OUTSIDE]) s += ", " + r.profile_states[OUTSIDE] + " with unknown profile (payload not checked)";
     if (r.restarts > 0) s += ", " + r.restarts + " restart(s)";
-    if (r.signed_records > 0) {
-      s += ", " + r.signed_records + " signed record(s)";
-      if (r.signatures_verified > 0 || r.unsigned_records > 0) {
-        s += ", " + r.signatures_verified + " signature(s) verified";
-      }
+    // Say which signatures were not checked: without a key none were, and
+    // with a key only the ones that are present.
+    const keyGiven = !!r.key_given || r.signatures_verified > 0 || r.unsigned_records > 0;
+    if (r.signature_check === "unavailable" && r.signed_records > 0) {
+      s += ", " + r.signed_records + " signed record(s), signatures not checked (no Ed25519 in this runtime)";
+    } else if (!keyGiven && r.signed_records > 0) {
+      s += ", " + r.signed_records + " signed record(s), signatures not checked (no key)";
+    } else if (keyGiven && r.signed_records === 0) {
+      s += ", no record is signed";
+    } else if (keyGiven) {
+      s += ", " + r.signed_records + " signed record(s), " + r.signatures_verified + " signature(s) verified";
+      if (r.unsigned_records > 0) s += ", " + r.unsigned_records + " unsigned record(s)";
     }
     return s;
   }
@@ -1252,45 +1405,60 @@
   // appear as a chain failure. Records outside scope were not checked at all.
   function coverage(report, keyGiven) {
     const n = (x) => x + " record" + (x === 1 ? "" : "s");
+    const nLines = (x) => x + " line" + (x === 1 ? "" : "s");
+    const verb = (x, one, many) => (x === 1 ? one : many);
+    // Lines that are not a decodable record of this format (step 1 or 3 of
+    // SPEC.md 6.3): no hash was recomputed for them.
+    const unreadable = new Set(report.results.filter((r) => r.unreadable).map((r) => r.index));
     const chainRecords = new Set();
     let signatureFailures = 0;
     for (const f of report.findings) {
+      if (unreadable.has(f.index)) continue;
       if (f.class === HASH_MISMATCH || f.class === CHAIN_BREAK || f.class === SEQ_MISMATCH || f.class === SCHEMA_INVALID) chainRecords.add(f.index);
       if (f.class === SIGNATURE_INVALID) signatureFailures++;
     }
     const outside = report.states[OUTSIDE];
     const unknown = report.states[UNKNOWN];
-    const checked = report.records - outside;
+    const checked = report.records - outside - unreadable.size;
+    const notRead = (x) => nLines(x) + " " + verb(x, "is", "are") + " not a readable record of this format";
+    const notInScope = (x) => n(x) + " " + verb(x, "names", "name") + " another format or major version and " + verb(x, "was", "were") + " not checked.";
     let chain;
-    if (checked === 0) {
-      chain = "Nothing checked: every record names another format or major version.";
+    if (report.records === 0) {
+      chain = "Nothing checked: the file contains no record. A journal without records never passes.";
+    } else if (checked === 0 && unreadable.size === 0) {
+      chain = "Nothing checked: " + verb(outside, "the record names", "every record names") + " another format or major version.";
+    } else if (checked === 0) {
+      chain = "Nothing checked: " + notRead(unreadable.size) + " (not JSON, or a JSON object that is not a valid record), so no hash could be recomputed.";
+      if (outside > 0) chain += " " + notInScope(outside);
     } else {
-      chain = "Checked for " + (outside > 0 ? n(checked) + " of " + report.records : "all " + n(checked)) + ": hashes recomputed, links and sequence numbers followed";
-      if (chainRecords.size > 0) chain += "; " + n(chainRecords.size) + " fail that check.";
-      else if (unknown > 0) chain += "; " + n(unknown) + " link to a predecessor that is not in this journal, the rest hold together.";
-      else chain += "; they hold together.";
-      if (outside > 0) chain += " " + n(outside) + " name another format or major version and were not checked.";
+      chain = "Checked for " + (checked === report.records ? (checked === 1 ? "the one record" : "all " + n(checked)) : checked + " of " + n(report.records)) + ": hashes recomputed, links and sequence numbers followed";
+      if (chainRecords.size > 0) chain += "; " + n(chainRecords.size) + " " + verb(chainRecords.size, "fails", "fail") + " that check.";
+      else if (unknown > 0) chain += "; " + n(unknown) + " " + verb(unknown, "links", "link") + " to a predecessor that is not in this journal" + (unknown < checked ? ", the rest hold together." : ".");
+      else chain += "; " + verb(checked, "it holds", "they hold") + " together.";
+      if (unreadable.size > 0) chain += " " + notRead(unreadable.size) + " and " + verb(unreadable.size, "was", "were") + " not checked.";
+      if (outside > 0) chain += " " + notInScope(outside);
     }
+    const carry = (x, what) => n(x) + " " + verb(x, "carries", "carry") + " " + what;
     let signatures;
     if (report.signature_check === "unavailable") {
-      signatures = "Not checked: this browser's WebCrypto has no Ed25519. " + n(report.signed_records) + " carry a signature.";
+      signatures = "Not checked: this browser's WebCrypto has no Ed25519. " + carry(report.signed_records, "a signature") + ".";
     } else if (report.signed_records === 0 && signatureFailures === 0) {
       signatures = "None: no record carries a signature, so nothing here says who produced the journal.";
     } else if (!keyGiven) {
-      signatures = "Not checked: " + n(report.signed_records) + " carry a signature, but no public key was entered. Without it the verdict says nothing about who produced the journal.";
+      signatures = "Not checked: " + carry(report.signed_records, "a signature") + ", but no public key was entered. Without it the verdict says nothing about who produced the journal.";
     } else {
       signatures = "Checked against the key you entered: " + report.signatures_verified + " of " + n(report.signed_records) + " verified";
       if (signatureFailures > 0) signatures += ", " + signatureFailures + " failed";
-      if (report.unsigned_records > 0) signatures += "; " + n(report.unsigned_records) + " carry no signature";
+      if (report.unsigned_records > 0) signatures += "; " + carry(report.unsigned_records, "no signature");
       signatures += ". A verified signature binds the record to the key's holder only if you trust where the key came from.";
     }
     const ps = report.profile_states;
     const parts = [];
     if (ps[VALID] + ps[INVALID] > 0) parts.push(n(ps[VALID] + ps[INVALID]) + " checked against a profile this page knows" + (ps[INVALID] > 0 ? " (" + ps[INVALID] + " failed)" : ""));
-    if (ps[OUTSIDE] > 0) parts.push(n(ps[OUTSIDE]) + " name a profile this page does not know, so their payload was not checked");
-    if (ps[PROFILE_NONE] > 0) parts.push(n(ps[PROFILE_NONE]) + " name no profile");
+    if (ps[OUTSIDE] > 0) parts.push(n(ps[OUTSIDE]) + " " + verb(ps[OUTSIDE], "names", "name") + " a profile this page does not know, so " + verb(ps[OUTSIDE], "its", "their") + " payload was not checked");
+    if (ps[PROFILE_NONE] > 0) parts.push(n(ps[PROFILE_NONE]) + " " + verb(ps[PROFILE_NONE], "names", "name") + " no profile");
     const profiles = (parts.length ? parts.join("; ") : "No record names a profile") + ". A profile check covers the shape of the payload, not whether its values are true.";
-    const completeness = "Not shown by this check. A passing chain means the journal is internally consistent: each record matches its own hashes and links to the one before it. It does not show that nobody re-sealed the whole chain, that the journal is complete, that an event happened as described, or who produced it unless a signature is verified against a key you trust.";
+    const completeness = "Not shown by this check. A passing chain means the journal is internally consistent: each record matches its own hashes and links to the one before it. It does not show that nobody re-sealed the whole chain, that no records were cut off at its end, that the journal is complete, that an event happened as described, or who produced it unless a signature is verified against a key you trust. Members that are not hashed (job_id, correlation_id, decision_id, context, redaction, anchor and signature) can be changed without a finding.";
     return { chain, signatures, profiles, completeness };
   }
 
@@ -1304,6 +1472,7 @@
     canonicalize, canonicalBytes, escapeString, formatNumber,
     hashBytes, keyId, computeHashes,
     parsePublicKey, verifySignature, ed25519Available, Ed25519Unavailable, cryptoAvailable,
+    MAX_DEPTH, parseRecordLine, journalLines,
     parseSeq, decodeProblems, validateStructure, checkRecord, verifyRecord, verifyStream, summary, coverage, exitCode, reportToJSON, findingToJSON,
     profiles, validateProfilePayload, compileProfileSchema,
     json: { memberSpans, arrayItems, scanValue, unsafeIntegers },

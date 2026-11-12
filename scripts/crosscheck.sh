@@ -3,9 +3,10 @@
 # and the browser verifier (web/verify.js, run with Node) must reproduce every
 # hash byte for byte, all three verifiers must produce identical reports
 # (verdict, counts, streams, the state and profile state of every record, and
-# every finding; only the wording of messages may differ) and the same exit
-# code (0 valid, 1 invalid, 3 incomplete) on every stream fixture, example
-# and profile journal, with and without keys, --allow-incomplete and
+# every finding; only the wording of messages may differ), the same summary
+# line word for word (it says what was not checked) and the same exit code
+# (0 valid, 1 invalid, 3 incomplete) on every stream fixture, example and
+# profile journal, with and without keys, --allow-incomplete and
 # --require-known-profiles, and each must pass scripts/conformance.sh.
 #
 # Usage: scripts/crosscheck.sh            (picks the newest python3 >= 3.9)
@@ -61,7 +62,7 @@ for copy in transfer-worker.jsonl tampered/hash-mismatch.jsonl; do
   fi
 done
 
-echo "== 4. All verifiers produce identical reports on fixtures, examples and profile journals"
+echo "== 4. All verifiers produce identical reports and summary lines on fixtures, examples and profile journals"
 GOBIN="$TMP/trail-evidence"
 (cd go && go build -o "$GOBIN" ./cmd/trail-evidence)
 PUB=testdata/keys/test-ed25519.pub
@@ -78,7 +79,15 @@ for f in examples/*.jsonl examples/tampered/*.jsonl testdata/streams/*.jsonl pro
     "$GOBIN" verify "$f" "${flags[@]}" --json > "$TMP/go.json"; gorc=$?
     PYTHONPATH=python "$PY" -m trail_evidence verify "$f" "${flags[@]}" --json > "$TMP/py.json"; pyrc=$?
     "$NODE" web/test/run.mjs report "$f" "${flags[@]}" > "$TMP/js.json"; jsrc=$?
+    # The summary line, word for word.
+    gosum="$("$GOBIN" verify "$f" "${flags[@]}" | head -n 1)"
+    pysum="$(PYTHONPATH=python "$PY" -m trail_evidence verify "$f" "${flags[@]}" | head -n 1)"
+    jssum="$("$NODE" web/test/run.mjs verify "$f" "${flags[@]}" | head -n 1)"
     set -e
+    if [ "$gosum" != "$pysum" ] || [ "$gosum" != "$jssum" ]; then
+      printf 'MISMATCH %s [%s] summary line\n  go:         %s\n  python:     %s\n  javascript: %s\n' "$f" "$mode" "$gosum" "$pysum" "$jssum"
+      mismatch=1
+    fi
     # Compare the whole report except the wording of messages.
     "$PY" - "$TMP/go.json" "$gorc" "$f" "$mode" python "$TMP/py.json" "$pyrc" javascript "$TMP/js.json" "$jsrc" <<'PYEOF' || mismatch=1
 import json, sys

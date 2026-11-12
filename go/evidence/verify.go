@@ -70,7 +70,7 @@ const (
 const (
 	ExitValid      = 0 // verdict valid, or incomplete and allowed
 	ExitInvalid    = 1 // verdict invalid
-	ExitUsage      = 2 // usage or I/O error
+	ExitUsage      = 2 // usage error, or a journal that cannot be read (no verdict)
 	ExitIncomplete = 3 // verdict incomplete and not allowed
 )
 
@@ -143,6 +143,20 @@ type Report struct {
 	Streams              []StreamSummary    `json:"streams"`
 	Results              []RecordResult     `json:"results"`
 	Findings             []Finding          `json:"findings"`
+
+	// readErr is the error that stopped reading the journal before its end.
+	readErr error
+	// keyGiven: the journal was verified with a public key. Not part of the
+	// JSON report; Summary uses it to say which signatures were not checked.
+	keyGiven bool
+}
+
+// Err returns the error that stopped VerifyStream from reading the journal
+// to its end, or nil. A report with an error has no verdict (Verdict is
+// empty), OK is false and ExitCode is ExitUsage: the part that could be read
+// is never judged on its own (SPEC.md section 6.4).
+func (r Report) Err() error {
+	return r.readErr
 }
 
 // Options control VerifyStream.
@@ -165,6 +179,8 @@ type Options struct {
 // ExitCode maps the report to the exit code of the verify command.
 func (r Report) ExitCode() int {
 	switch {
+	case r.readErr != nil:
+		return ExitUsage
 	case r.OK:
 		return ExitValid
 	case r.Verdict == VerdictInvalid:
@@ -174,18 +190,26 @@ func (r Report) ExitCode() int {
 	}
 }
 
-// finish computes Verdict and OK from the record states.
+// finish computes Verdict and OK from the record states (SPEC.md section
+// 6.4). A journal without a record is incomplete and never passes; a journal
+// that could not be read to its end gets no verdict.
 func (r *Report) finish() {
+	if r.readErr != nil {
+		r.Verdict = ""
+		r.OK = false
+		return
+	}
 	unknownProfiles := r.RequireKnownProfiles && r.ProfileStates.OutsideScope > 0
+	empty := r.Records == 0
 	switch {
 	case r.States.Invalid > 0:
 		r.Verdict = VerdictInvalid
-	case r.States.Unknown > 0 || r.States.OutsideScope > 0 || unknownProfiles:
+	case empty || r.States.Unknown > 0 || r.States.OutsideScope > 0 || unknownProfiles:
 		r.Verdict = VerdictIncomplete
 	default:
 		r.Verdict = VerdictValid
 	}
-	r.OK = r.Verdict == VerdictValid || (r.Verdict == VerdictIncomplete && r.AllowIncomplete && !unknownProfiles)
+	r.OK = r.Verdict == VerdictValid || (r.Verdict == VerdictIncomplete && r.AllowIncomplete && !unknownProfiles && !empty)
 }
 
 // Summary renders the report in one line, in the style of
@@ -198,6 +222,9 @@ func (r Report) Summary() string {
 	}
 	fmt.Fprintf(&b, ": %d record(s) in %d stream(s)", r.Records, len(r.Streams))
 	switch {
+	case r.Records == 0:
+		b.WriteString(", no record: nothing was verified")
+		return b.String()
 	case r.Verdict == VerdictInvalid:
 		fmt.Fprintf(&b, ", %d error(s)", r.Errors)
 	case r.States.Unknown > 0:
@@ -212,15 +239,23 @@ func (r Report) Summary() string {
 		fmt.Fprintf(&b, ", %d outside scope", r.States.OutsideScope)
 	}
 	if r.ProfileStates.OutsideScope > 0 {
-		fmt.Fprintf(&b, ", %d with unknown profile", r.ProfileStates.OutsideScope)
+		fmt.Fprintf(&b, ", %d with unknown profile (payload not checked)", r.ProfileStates.OutsideScope)
 	}
 	if r.Restarts > 0 {
 		fmt.Fprintf(&b, ", %d restart(s)", r.Restarts)
 	}
-	if r.SignedRecords > 0 {
-		fmt.Fprintf(&b, ", %d signed record(s)", r.SignedRecords)
-		if r.SignaturesVerified > 0 || r.UnsignedRecords > 0 {
-			fmt.Fprintf(&b, ", %d signature(s) verified", r.SignaturesVerified)
+	// Say which signatures were not checked: without a key none were, and
+	// with a key only the ones that are present.
+	keyGiven := r.keyGiven || r.SignaturesVerified > 0 || r.UnsignedRecords > 0
+	switch {
+	case !keyGiven && r.SignedRecords > 0:
+		fmt.Fprintf(&b, ", %d signed record(s), signatures not checked (no key)", r.SignedRecords)
+	case keyGiven && r.SignedRecords == 0:
+		b.WriteString(", no record is signed")
+	case keyGiven:
+		fmt.Fprintf(&b, ", %d signed record(s), %d signature(s) verified", r.SignedRecords, r.SignaturesVerified)
+		if r.UnsignedRecords > 0 {
+			fmt.Fprintf(&b, ", %d unsigned record(s)", r.UnsignedRecords)
 		}
 	}
 	return b.String()
@@ -384,21 +419,28 @@ type streamState struct {
 // restarts, profiles and, when a key is given, signatures. Blank lines are
 // skipped. Verification continues after an error so that a report lists
 // every problem; chain state is advanced with the record's declared
-// chain_hash.
+// chain_hash. If reading fails before the end of the journal, the report
+// has no verdict and Err returns the error.
 func VerifyStream(rd io.Reader, opts Options) Report {
 	rep := Report{AllowIncomplete: opts.AllowIncomplete, RequireKnownProfiles: opts.RequireKnownProfiles,
-		Findings: []Finding{}, Streams: []StreamSummary{}, Results: []RecordResult{}}
+		Findings: []Finding{}, Streams: []StreamSummary{}, Results: []RecordResult{}, keyGiven: opts.PublicKey != nil}
 	streams := map[string]*streamState{}
 	br := bufio.NewReader(rd)
 	line := 0
 	index := -1
 	for {
 		raw, err := br.ReadBytes('\n')
+		if err != nil && err != io.EOF {
+			// Not the end of the journal: whatever was read is not judged.
+			rep.readErr = err
+			break
+		}
 		if len(raw) == 0 && err != nil {
 			break
 		}
 		line++
-		trimmed := bytes.TrimSpace(raw)
+		// Only JSON white space makes a line blank (SPEC.md section 2).
+		trimmed := trimJSONSpace(raw)
 		if len(trimmed) == 0 {
 			if err != nil {
 				break

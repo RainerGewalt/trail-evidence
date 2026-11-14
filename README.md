@@ -5,7 +5,7 @@
 
 <h1 align="center">Trail Evidence</h1>
 
-**Status: v0.2.1, released 2026-11-07. The format may still change before
+**Status: v0.2.2, released 2026-11-14. The format may still change before
 1.0; changes are listed in [CHANGELOG.md](CHANGELOG.md).**
 
 **Is this event journal intact?** Drop a `.jsonl` journal on the browser
@@ -94,7 +94,7 @@ Windows on amd64 and arm64, each with the binary, `LICENSE` and `SPEC.md`,
 plus `checksums.txt`:
 
 ```bash
-V=0.2.1
+V=0.2.2
 curl -LO https://github.com/RainerGewalt/trail-evidence/releases/download/v$V/trail-evidence_${V}_linux_amd64.tar.gz
 curl -LO https://github.com/RainerGewalt/trail-evidence/releases/download/v$V/checksums.txt
 sha256sum --ignore-missing -c checksums.txt
@@ -355,7 +355,7 @@ Verify journals in CI. The step fails when any journal is `invalid`, or
 3).
 
 ```yaml
-- uses: RainerGewalt/trail-evidence@v0.2.1
+- uses: RainerGewalt/trail-evidence@v0.2.2
   with:
     journal: evidence/*.jsonl
 ```
@@ -364,7 +364,7 @@ With signatures and the outputs:
 
 ```yaml
 - id: evidence
-  uses: RainerGewalt/trail-evidence@v0.2.1
+  uses: RainerGewalt/trail-evidence@v0.2.2
   with:
     journal: evidence/**/*.jsonl
     pubkey: keys/producer.pub
@@ -375,7 +375,7 @@ With signatures and the outputs:
 For rotated logs or excerpts, which start in the middle of a stream:
 
 ```yaml
-- uses: RainerGewalt/trail-evidence@v0.2.1
+- uses: RainerGewalt/trail-evidence@v0.2.2
   with:
     journal: logs/evidence-*.jsonl
     allow-incomplete: true

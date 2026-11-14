@@ -6,6 +6,8 @@ tagged. Until then the record format is a draft and may change.
 
 ## Unreleased
 
+## 0.2.2 - 2026-11-14
+
 Fixes to how the verifiers read a journal and what they report. No hash
 changes: a journal whose lines keep the reading rules below verifies as
 before, and the journals of the TrailSource demo and interop runs give the
